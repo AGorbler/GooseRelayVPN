@@ -30,14 +30,24 @@ cd "$ROOT"
 GOOS=linux GOARCH=amd64 go build -o "$BINARY" ./cmd/server
 echo "    Built: $BINARY ($(du -sh "$BINARY" | cut -f1))"
 
-# Write a self-contained install script that will run on the droplet.
+# Write a self-contained install script that runs on the droplet.
+# It stops the service first (releasing the binary lock), swaps in the
+# new binary, then restarts.
 INSTALL_SCRIPT="$(mktemp /tmp/relay-install-XXXX.sh)"
 cat > "$INSTALL_SCRIPT" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 DEPLOY_DIR="$HOME"
-sed -i "s|/root|$DEPLOY_DIR|g" ~/relay-tunnel.service
+
+# Stop service first to release the lock on the binary.
+sudo systemctl stop relay-tunnel 2>/dev/null || true
+
+# Swap in the new binary.
+mv "$DEPLOY_DIR/relay-server-linux.new" "$DEPLOY_DIR/relay-server-linux"
 chmod +x "$DEPLOY_DIR/relay-server-linux"
+
+# Install/update the service file.
+sed -i "s|/root|$DEPLOY_DIR|g" ~/relay-tunnel.service
 sudo mv ~/relay-tunnel.service /etc/systemd/system/relay-tunnel.service
 sudo systemctl daemon-reload
 sudo systemctl enable relay-tunnel
@@ -46,14 +56,15 @@ sleep 1
 sudo systemctl status relay-tunnel --no-pager
 SCRIPT
 
-echo "==> Copying binary, config, and install script to $REMOTE:~/ ..."
-scp "$BINARY" "$CONFIG" "$SERVICE_TEMPLATE" "$INSTALL_SCRIPT" "$REMOTE:~/"
+echo "==> Copying files to $REMOTE:~/ ..."
+# Upload binary as .new so the running process doesn't hold a lock on it.
+scp "$BINARY" "$REMOTE:~/relay-server-linux.new"
+scp "$CONFIG" "$SERVICE_TEMPLATE" "$INSTALL_SCRIPT" "$REMOTE:~/"
 rm "$INSTALL_SCRIPT"
 
 REMOTE_SCRIPT="~/$(basename "$INSTALL_SCRIPT")"
 
-echo "==> Running install on $REMOTE (you may be prompted for your sudo password)..."
-# -t allocates a real TTY so sudo can prompt for password interactively
+echo "==> Installing on $REMOTE (you may be prompted for your sudo password)..."
 ssh -t "$REMOTE" "bash $REMOTE_SCRIPT; rm $REMOTE_SCRIPT"
 
 echo ""
