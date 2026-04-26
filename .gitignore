@@ -1,4 +1,4 @@
-# Local configs (use *_config.example.json as templates)
+# Local configs (use *_config.example.json as templates) — contain the AES key.
 client_config.json
 server_config.json
 
@@ -8,12 +8,21 @@ server_config.json
 /relay-client
 /relay-server
 /relay-server-linux
+/bin/
+/dist/
+/release/
 
 # Go build/test artifacts
 *.test
 *.out
+coverage.*
 
 # Editor / OS
 .DS_Store
 .idea/
 .vscode/
+*.swp
+
+# Misc
+*.token
+*.log

@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build binaries
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          NAME="relay-tunnel-${VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p "dist/$NAME"
+          SUFFIX=""
+          if [ "$GOOS" = "windows" ]; then SUFFIX=".exe"; fi
+
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          go build -trimpath -ldflags "$LDFLAGS" -o "dist/$NAME/relay-client${SUFFIX}" ./cmd/client
+          go build -trimpath -ldflags "$LDFLAGS" -o "dist/$NAME/relay-server${SUFFIX}" ./cmd/server
+
+          cp client_config.example.json server_config.example.json README.md LICENSE 2>/dev/null || true
+          cp -r apps_script "dist/$NAME/"
+          cp client_config.example.json server_config.example.json "dist/$NAME/"
+          cp README.md "dist/$NAME/" 2>/dev/null || true
+          cp LICENSE "dist/$NAME/" 2>/dev/null || true
+
+          cd dist
+          if [ "$GOOS" = "windows" ]; then
+            zip -r "${NAME}.zip" "$NAME"
+          else
+            tar -czf "${NAME}.tar.gz" "$NAME"
+          fi
+          ls -lh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/relay-tunnel-*.*
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum relay-tunnel-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/relay-tunnel-*
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
