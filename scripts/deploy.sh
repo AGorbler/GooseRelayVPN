@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy the relay-tunnel exit server to a remote host.
+# Deploy the GooseRelayVPN exit server to a remote host.
 #
 # Usage: bash scripts/deploy.sh kianmhz@146.190.246.7
 #        bash scripts/deploy.sh user@host [server_config.json]
@@ -17,13 +17,13 @@ fi
 
 if [[ ! -f "$CONFIG" ]]; then
   echo "Error: config file '$CONFIG' not found." >&2
-  echo "Copy server_config.example.json → server_config.json and fill in aes_key_hex." >&2
+  echo "Copy server_config.example.json → server_config.json and fill in tunnel_key." >&2
   exit 1
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BINARY="$ROOT/relay-server-linux"
-SERVICE_TEMPLATE="$ROOT/scripts/relay-tunnel.service"
+BINARY="$ROOT/goose-server-linux"
+SERVICE_TEMPLATE="$ROOT/scripts/goose-relay.service"
 
 echo "==> Building Linux amd64 binary..."
 cd "$ROOT"
@@ -33,32 +33,36 @@ echo "    Built: $BINARY ($(du -sh "$BINARY" | cut -f1))"
 # Write a self-contained install script that runs on the droplet.
 # It stops the service first (releasing the binary lock), swaps in the
 # new binary, then restarts.
-INSTALL_SCRIPT="$(mktemp /tmp/relay-install-XXXX.sh)"
+INSTALL_SCRIPT="$(mktemp /tmp/goose-install-XXXX.sh)"
 cat > "$INSTALL_SCRIPT" <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
 DEPLOY_DIR="$HOME"
 
 # Stop service first to release the lock on the binary.
+sudo systemctl stop goose-relay 2>/dev/null || true
+# Stop legacy relay-tunnel service if it exists from a pre-rename install.
 sudo systemctl stop relay-tunnel 2>/dev/null || true
+sudo systemctl disable relay-tunnel 2>/dev/null || true
+sudo rm -f /etc/systemd/system/relay-tunnel.service
 
 # Swap in the new binary.
-mv "$DEPLOY_DIR/relay-server-linux.new" "$DEPLOY_DIR/relay-server-linux"
-chmod +x "$DEPLOY_DIR/relay-server-linux"
+mv "$DEPLOY_DIR/goose-server-linux.new" "$DEPLOY_DIR/goose-server-linux"
+chmod +x "$DEPLOY_DIR/goose-server-linux"
 
 # Install/update the service file.
-sed -i "s|/root|$DEPLOY_DIR|g" ~/relay-tunnel.service
-sudo mv ~/relay-tunnel.service /etc/systemd/system/relay-tunnel.service
+sed -i "s|/root|$DEPLOY_DIR|g" ~/goose-relay.service
+sudo mv ~/goose-relay.service /etc/systemd/system/goose-relay.service
 sudo systemctl daemon-reload
-sudo systemctl enable relay-tunnel
-sudo systemctl restart relay-tunnel
+sudo systemctl enable goose-relay
+sudo systemctl restart goose-relay
 sleep 1
-sudo systemctl status relay-tunnel --no-pager
+sudo systemctl status goose-relay --no-pager
 SCRIPT
 
 echo "==> Copying files to $REMOTE:~/ ..."
 # Upload binary as .new so the running process doesn't hold a lock on it.
-scp "$BINARY" "$REMOTE:~/relay-server-linux.new"
+scp "$BINARY" "$REMOTE:~/goose-server-linux.new"
 scp "$CONFIG" "$SERVICE_TEMPLATE" "$INSTALL_SCRIPT" "$REMOTE:~/"
 rm "$INSTALL_SCRIPT"
 

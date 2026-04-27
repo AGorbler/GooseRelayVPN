@@ -41,14 +41,14 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME}"
-          NAME="relay-tunnel-${VERSION}-${GOOS}-${GOARCH}"
+          NAME="GooseRelayVPN-${VERSION}-${GOOS}-${GOARCH}"
           mkdir -p "dist/$NAME"
           SUFFIX=""
           if [ "$GOOS" = "windows" ]; then SUFFIX=".exe"; fi
 
           LDFLAGS="-s -w -X main.version=${VERSION}"
-          go build -trimpath -ldflags "$LDFLAGS" -o "dist/$NAME/relay-client${SUFFIX}" ./cmd/client
-          go build -trimpath -ldflags "$LDFLAGS" -o "dist/$NAME/relay-server${SUFFIX}" ./cmd/server
+          go build -trimpath -ldflags "$LDFLAGS" -o "dist/$NAME/goose-client${SUFFIX}" ./cmd/client
+          go build -trimpath -ldflags "$LDFLAGS" -o "dist/$NAME/goose-server${SUFFIX}" ./cmd/server
 
           cp client_config.example.json server_config.example.json README.md LICENSE 2>/dev/null || true
           cp -r apps_script "dist/$NAME/"
@@ -68,7 +68,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/relay-tunnel-*.*
+          path: dist/GooseRelayVPN-*.*
 
   release:
     name: Publish release
@@ -83,13 +83,13 @@ jobs:
       - name: Generate SHA256SUMS
         run: |
           cd dist
-          sha256sum relay-tunnel-* > SHA256SUMS.txt
+          sha256sum GooseRelayVPN-* > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/relay-tunnel-*
+            dist/GooseRelayVPN-*
             dist/SHA256SUMS.txt
           generate_release_notes: true
         env:

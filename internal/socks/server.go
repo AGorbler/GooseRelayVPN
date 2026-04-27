@@ -7,7 +7,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/kianmhz/relay-tunnel/internal/session"
+	"github.com/kianmhz/GooseRelayVPN/internal/session"
 	"github.com/things-go/go-socks5"
 	"github.com/things-go/go-socks5/statute"
 )

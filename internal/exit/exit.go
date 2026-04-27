@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kianmhz/relay-tunnel/internal/frame"
-	"github.com/kianmhz/relay-tunnel/internal/session"
+	"github.com/kianmhz/GooseRelayVPN/internal/frame"
+	"github.com/kianmhz/GooseRelayVPN/internal/session"
 )
 
 const (

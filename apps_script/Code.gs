@@ -1,4 +1,4 @@
-// relay-tunnel forwarder.
+// GooseRelayVPN forwarder.
 //
 // Apps Script web app deployed as: Execute as: Me, Access: Anyone (or Anyone with Google account).
 // All traffic is AES-GCM encrypted by the client; this script is a dumb pipe
@@ -28,6 +28,6 @@ function doPost(e) {
 
 function doGet() {
   return ContentService
-    .createTextOutput('relay-tunnel forwarder OK')
+    .createTextOutput('GooseRelayVPN forwarder OK')
     .setMimeType(ContentService.MimeType.TEXT);
 }

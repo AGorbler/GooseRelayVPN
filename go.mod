@@ -1,4 +1,4 @@
-module github.com/kianmhz/relay-tunnel
+module github.com/kianmhz/GooseRelayVPN
 
 go 1.22
 

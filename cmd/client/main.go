@@ -1,4 +1,4 @@
-// relay-tunnel client: SOCKS5 listener that tunnels TCP through Apps Script.
+// GooseRelayVPN client: SOCKS5 listener that tunnels TCP through Apps Script.
 package main
 
 import (
@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kianmhz/relay-tunnel/internal/carrier"
-	"github.com/kianmhz/relay-tunnel/internal/config"
-	"github.com/kianmhz/relay-tunnel/internal/session"
-	"github.com/kianmhz/relay-tunnel/internal/socks"
+	"github.com/kianmhz/GooseRelayVPN/internal/carrier"
+	"github.com/kianmhz/GooseRelayVPN/internal/config"
+	"github.com/kianmhz/GooseRelayVPN/internal/session"
+	"github.com/kianmhz/GooseRelayVPN/internal/socks"
 )
 
 type clientLogWriter struct {
@@ -117,7 +117,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	log.Printf("[client] relay-tunnel client starting")
+	log.Printf("[client] GooseRelayVPN client starting")
 	log.Printf("[client] config loaded from %s", *configPath)
 	log.Printf("[client] SOCKS5 proxy: socks5://%s", cfg.ListenAddr)
 	log.Printf("[client] fronting via %s (sni=%s)", cfg.GoogleIP, cfg.SNIHost)

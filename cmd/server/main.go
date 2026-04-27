@@ -1,4 +1,4 @@
-// relay-tunnel server (DO exit): receives AES-encrypted frame batches from
+// GooseRelayVPN server (VPS exit): receives AES-encrypted frame batches from
 // Apps Script, decrypts, and bridges to real upstream TCP targets.
 package main
 
@@ -6,8 +6,8 @@ import (
 	"flag"
 	"log"
 
-	"github.com/kianmhz/relay-tunnel/internal/config"
-	"github.com/kianmhz/relay-tunnel/internal/exit"
+	"github.com/kianmhz/GooseRelayVPN/internal/config"
+	"github.com/kianmhz/GooseRelayVPN/internal/exit"
 )
 
 func main() {

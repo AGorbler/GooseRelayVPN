@@ -10,7 +10,7 @@ package session
 import (
 	"sync"
 
-	"github.com/kianmhz/relay-tunnel/internal/frame"
+	"github.com/kianmhz/GooseRelayVPN/internal/frame"
 )
 
 // TxBufHighWater is the soft ceiling on the per-session tx buffer; EnqueueTx

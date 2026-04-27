@@ -1,6 +1,6 @@
-# relay-tunnel
+# GooseRelayVPN
 
-[![GitHub](https://img.shields.io/badge/GitHub-relay--tunnel-blue?logo=github)](https://github.com/kianmhz/relay-tunnel)
+[![GitHub](https://img.shields.io/badge/GitHub-GooseRelayVPN-blue?logo=github)](https://github.com/kianmhz/GooseRelayVPN)
 
 **[🇮🇷 راهنمای فارسی (Persian)](README_FA.md)**
 
@@ -22,7 +22,7 @@ A SOCKS5 VPN that tunnels **raw TCP** through a Google Apps Script web app to yo
 
 ## Disclaimer
 
-relay-tunnel is provided for educational, testing, and research purposes only.
+GooseRelayVPN is provided for educational, testing, and research purposes only.
 
 - **Provided without warranty:** This software is provided "AS IS", without express or implied warranty, including merchantability, fitness for a particular purpose, and non-infringement.
 - **Limitation of liability:** The developers and contributors are not responsible for any direct, indirect, incidental, consequential, or other damages resulting from the use of this project.
@@ -65,23 +65,23 @@ Pick one of the two paths below.
 
 **Option A — download a pre-built release (recommended if you don't want to install Go):**
 
-1. Go to the [Releases page](https://github.com/kianmhz/relay-tunnel/releases).
+1. Go to the [Releases page](https://github.com/kianmhz/GooseRelayVPN/releases).
 2. Download the archive that matches your computer:
-   - Windows: `relay-tunnel-vX.Y.Z-windows-amd64.zip`
-   - macOS (Intel): `relay-tunnel-vX.Y.Z-darwin-amd64.tar.gz`
-   - macOS (Apple Silicon / M1/M2/M3): `relay-tunnel-vX.Y.Z-darwin-arm64.tar.gz`
-   - Linux: `relay-tunnel-vX.Y.Z-linux-amd64.tar.gz`
-3. Unzip/untar it. Inside you'll find `relay-client`, `relay-server`, the example configs, and the Apps Script source.
+   - Windows: `GooseRelayVPN-vX.Y.Z-windows-amd64.zip`
+   - macOS (Intel): `GooseRelayVPN-vX.Y.Z-darwin-amd64.tar.gz`
+   - macOS (Apple Silicon / M1/M2/M3): `GooseRelayVPN-vX.Y.Z-darwin-arm64.tar.gz`
+   - Linux: `GooseRelayVPN-vX.Y.Z-linux-amd64.tar.gz`
+3. Unzip/untar it. Inside you'll find `goose-client`, `goose-server`, the example configs, and the Apps Script source.
 
 You can also `cd` into that folder and follow the rest of the setup from there — every command below works the same.
 
 **Option B — build from source (Go 1.22+):**
 
 ```bash
-git clone https://github.com/kianmhz/relay-tunnel.git
-cd relay-tunnel
-go build -o relay-client ./cmd/client
-go build -o relay-server ./cmd/server
+git clone https://github.com/kianmhz/GooseRelayVPN.git
+cd GooseRelayVPN
+go build -o goose-client ./cmd/client
+go build -o goose-server ./cmd/server
 ```
 
 Or with the included Makefile: `make build` (puts binaries in `bin/`).
@@ -154,7 +154,7 @@ Verify the deployment:
 
 ```bash
 curl "$YOUR_SCRIPT_URL"
-# should print: relay-tunnel forwarder OK
+# should print: GooseRelayVPN forwarder OK
 ```
 
 ### Step 6: Deploy the exit server
@@ -174,7 +174,7 @@ curl http://your.droplet.ip:8443/healthz   # HTTP 200, empty body
 ### Step 7: Run the client locally
 
 ```bash
-./relay-client -config client_config.json
+./goose-client -config client_config.json
 ```
 
 You should see:
@@ -269,7 +269,7 @@ If you change `Code.gs` - for example to point at a new droplet IP - you must cr
 
 ```
 ┌─────────┐   ┌──────────────┐   ┌──────────────┐   ┌─────────────┐   ┌──────────┐
-│ Browser │──►│ relay-client │──►│ Google edge  │──►│ Apps Script │──►│  Your    │──► Internet
+│ Browser │──►│ goose-client │──►│ Google edge  │──►│ Apps Script │──►│  Your    │──► Internet
 │  / App  │◄──│  (SOCKS5)    │◄──│ TLS, fronted │◄──│  doPost()   │◄──│  VPS     │◄──
 └─────────┘   └──────────────┘   └──────────────┘   └─────────────┘   └──────────┘
               AES-256-GCM         SNI=www.google     dumb forwarder    decrypt +
@@ -295,7 +295,7 @@ Key invariants:
 ## Project Files
 
 ```
-relay-tunnel/
+GooseRelayVPN/
 ├── cmd/
 │   ├── client/main.go              # Entry point: SOCKS5 listener + carrier loop
 │   └── server/main.go              # Entry point: VPS HTTP handler
@@ -311,7 +311,7 @@ relay-tunnel/
 ├── scripts/
 │   ├── gen-key.sh                  # openssl rand -hex 32
 │   ├── deploy.sh                   # Build + scp + systemd install on the VPS
-│   └── relay-tunnel.service        # systemd unit template
+│   └── goose-relay.service        # systemd unit template
 ├── client_config.example.json
 └── server_config.example.json
 ```

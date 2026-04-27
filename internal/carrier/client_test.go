@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kianmhz/relay-tunnel/internal/frame"
+	"github.com/kianmhz/GooseRelayVPN/internal/frame"
 )
 
 const testKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

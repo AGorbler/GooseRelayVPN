@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/kianmhz/relay-tunnel/internal/frame"
+	"github.com/kianmhz/GooseRelayVPN/internal/frame"
 )
 
 func benchSID(b byte) [frame.SessionIDLen]byte {

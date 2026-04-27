@@ -5,9 +5,9 @@ server_config.json
 # Built binaries
 /client
 /server
-/relay-client
-/relay-server
-/relay-server-linux
+/goose-client
+/goose-server
+/goose-server-linux
 /bin/
 /dist/
 /release/

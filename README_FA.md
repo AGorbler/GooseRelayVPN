@@ -1,6 +1,6 @@
-# relay-tunnel
+# GooseRelayVPN
 
-[![GitHub](https://img.shields.io/badge/GitHub-relay--tunnel-blue?logo=github)](https://github.com/kianmhz/relay-tunnel)
+[![GitHub](https://img.shields.io/badge/GitHub-GooseRelayVPN-blue?logo=github)](https://github.com/kianmhz/GooseRelayVPN)
 
 **[English README](README.md)**
 
@@ -22,7 +22,7 @@
 
 ## سلب مسئولیت
 
-پروژه relay-tunnel فقط برای اهداف آموزشی، تست و پژوهش ارائه شده است.
+پروژه GooseRelayVPN فقط برای اهداف آموزشی، تست و پژوهش ارائه شده است.
 
 - **بدون ضمانت:** این نرم‌افزار به‌صورت «همان‌گونه که هست» ارائه می‌شود و هیچ ضمانت صریح یا ضمنی، از جمله قابلیت فروش، مناسب بودن برای هدف خاص یا عدم نقض حقوق دیگران، برای آن وجود ندارد.
 - **محدودیت مسئولیت:** توسعه‌دهندگان و مشارکت‌کنندگان این پروژه هیچ مسئولیتی در قبال خسارت‌های مستقیم، غیرمستقیم، اتفاقی، تبعی یا هر نوع خسارت دیگر ناشی از استفاده از این پروژه ندارند.
@@ -65,23 +65,23 @@
 
 **گزینه‌ی الف — دانلود باینری آماده (پیشنهاد می‌شود اگر نمی‌خواهید Go نصب کنید):**
 
-۱. به [صفحه‌ی Releases](https://github.com/kianmhz/relay-tunnel/releases) بروید.
+۱. به [صفحه‌ی Releases](https://github.com/kianmhz/GooseRelayVPN/releases) بروید.
 ۲. آرشیو متناسب با کامپیوترتان را دانلود کنید:
-   - ویندوز: `relay-tunnel-vX.Y.Z-windows-amd64.zip`
-   - مک (Intel): `relay-tunnel-vX.Y.Z-darwin-amd64.tar.gz`
-   - مک (Apple Silicon / M1/M2/M3): `relay-tunnel-vX.Y.Z-darwin-arm64.tar.gz`
-   - لینوکس: `relay-tunnel-vX.Y.Z-linux-amd64.tar.gz`
-۳. آن را extract کنید. داخلش `relay-client`، `relay-server`، فایل‌های نمونه‌ی کانفیگ و سورس Apps Script را می‌بینید.
+   - ویندوز: `GooseRelayVPN-vX.Y.Z-windows-amd64.zip`
+   - مک (Intel): `GooseRelayVPN-vX.Y.Z-darwin-amd64.tar.gz`
+   - مک (Apple Silicon / M1/M2/M3): `GooseRelayVPN-vX.Y.Z-darwin-arm64.tar.gz`
+   - لینوکس: `GooseRelayVPN-vX.Y.Z-linux-amd64.tar.gz`
+۳. آن را extract کنید. داخلش `goose-client`، `goose-server`، فایل‌های نمونه‌ی کانفیگ و سورس Apps Script را می‌بینید.
 
 می‌توانید وارد همان پوشه شوید و بقیه‌ی مراحل را از آنجا ادامه دهید — همه‌ی دستورهای پایین به‌همان شکل کار می‌کنند.
 
 **گزینه‌ی ب — ساخت از سورس (Go نسخه‌ی ۱.۲۲ یا بالاتر):**
 
 ```bash
-git clone https://github.com/kianmhz/relay-tunnel.git
-cd relay-tunnel
-go build -o relay-client ./cmd/client
-go build -o relay-server ./cmd/server
+git clone https://github.com/kianmhz/GooseRelayVPN.git
+cd GooseRelayVPN
+go build -o goose-client ./cmd/client
+go build -o goose-server ./cmd/server
 ```
 
 یا با Makefile همراه پروژه: `make build` (باینری‌ها در پوشه‌ی `bin/` ساخته می‌شوند).
@@ -154,7 +154,7 @@ cp server_config.example.json   server_config.json
 
 ```bash
 curl "$YOUR_SCRIPT_URL"
-# باید چاپ کند: relay-tunnel forwarder OK
+# باید چاپ کند: GooseRelayVPN forwarder OK
 ```
 
 ### مرحله ۶: deploy کردن سرور خروجی
@@ -174,7 +174,7 @@ curl http://your.droplet.ip:8443/healthz   # HTTP 200، body خالی
 ### مرحله ۷: اجرای کلاینت روی کامپیوتر محلی
 
 ```bash
-./relay-client -config client_config.json
+./goose-client -config client_config.json
 ```
 
 باید این پیام را ببینید:
@@ -269,7 +269,7 @@ curl -x socks5h://127.0.0.1:1080 https://api.ipify.org
 
 ```
 ┌─────────┐   ┌──────────────┐   ┌──────────────┐   ┌─────────────┐   ┌──────────┐
-│ مرورگر  │──►│ relay-client │──►│ لبه‌ی گوگل   │──►│ Apps Script │──►│  VPS     │──► اینترنت
+│ مرورگر  │──►│ goose-client │──►│ لبه‌ی گوگل   │──►│ Apps Script │──►│  VPS     │──► اینترنت
 │  / اپ   │◄──│  (SOCKS5)    │◄──│ TLS, fronted │◄──│  doPost()   │◄──│  شما     │◄──
 └─────────┘   └──────────────┘   └──────────────┘   └─────────────┘   └──────────┘
               AES-256-GCM         SNI=www.google     پل ساده          رمزگشایی +
@@ -295,7 +295,7 @@ curl -x socks5h://127.0.0.1:1080 https://api.ipify.org
 ## فایل‌های پروژه
 
 ```
-relay-tunnel/
+GooseRelayVPN/
 ├── cmd/
 │   ├── client/main.go              # نقطه‌ی شروع: SOCKS5 listener + carrier loop
 │   └── server/main.go              # نقطه‌ی شروع: VPS HTTP handler
@@ -311,7 +311,7 @@ relay-tunnel/
 ├── scripts/
 │   ├── gen-key.sh                  # openssl rand -hex 32
 │   ├── deploy.sh                   # build + scp + نصب systemd روی VPS
-│   └── relay-tunnel.service        # template برای systemd unit
+│   └── goose-relay.service        # template برای systemd unit
 ├── client_config.example.json
 └── server_config.example.json
 ```
