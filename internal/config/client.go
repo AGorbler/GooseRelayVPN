@@ -24,6 +24,8 @@ type Client struct {
 	UseFronting bool
 	AESKeyHex   string // 64-char hex
 	DebugTiming bool   // when true, log per-session TTFB and per-poll Apps Script RTT
+	SocksUser   string // optional SOCKS5 username (RFC 1929); empty = no auth
+	SocksPass   string // optional SOCKS5 password (RFC 1929); empty = no auth
 }
 
 // clientFile is the user-friendly client config format.
@@ -56,6 +58,12 @@ type clientFile struct {
 	// Apps Script round-trip latency to help pinpoint where a slow connection
 	// is spending its time. Off by default.
 	DebugTiming bool `json:"debug_timing"`
+
+	// Optional SOCKS5 RFC 1929 credentials. When set, clients must supply
+	// these credentials or the connection is rejected. Both must be non-empty
+	// together — setting only one is an error.
+	SocksUser string `json:"socks_user"`
+	SocksPass string `json:"socks_pass"`
 }
 
 func firstNonEmpty(values ...string) string {
@@ -278,6 +286,12 @@ func LoadClient(path string) (*Client, error) {
 		}
 	}
 
+	socksUser := strings.TrimSpace(f.SocksUser)
+	socksPass := strings.TrimSpace(f.SocksPass)
+	if (socksUser == "") != (socksPass == "") {
+		return nil, fmt.Errorf("socks_user and socks_pass must both be set or both be empty in %s", path)
+	}
+
 	c := Client{
 		ListenAddr:  net.JoinHostPort(listenHost, strconv.Itoa(listenPort)),
 		GoogleIP:    googleIP,
@@ -286,6 +300,8 @@ func LoadClient(path string) (*Client, error) {
 		UseFronting: useFronting,
 		AESKeyHex:   key,
 		DebugTiming: f.DebugTiming,
+		SocksUser:   socksUser,
+		SocksPass:   socksPass,
 	}
 	return &c, nil
 }

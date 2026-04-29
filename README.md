@@ -333,6 +333,8 @@ What the client does for you automatically:
 | `sni` | `www.google.com` | SNI presented during the TLS handshake. Accepts a single string or an array — `["www.google.com", "mail.google.com", "accounts.google.com"]` — where each SNI host gets its own connection and throttle bucket, which can multiply available bandwidth in regions that rate-limit per domain name. |
 | `script_keys` | — | Array of Apps Script Deployment IDs (no full URL needed). One ID is required; add more to increase both throughput and quota — each additional ID spawns 3 more concurrent poll workers and adds its own ~20,000 req/day quota bucket. |
 | `tunnel_key` | — | 64-char hex AES-256 key. Must match the server byte-for-byte. |
+| `socks_user` | *(optional)* | SOCKS5 username (RFC 1929). When set, clients must authenticate or the connection is rejected. Must be paired with `socks_pass` — set both or neither. |
+| `socks_pass` | *(optional)* | SOCKS5 password paired with `socks_user`. |
 
 ### Server (`server_config.json`)
 
@@ -393,6 +395,12 @@ GooseRelayVPN/
 │   ├── carrier/                    # Long-poll loop + domain-fronted HTTPS client
 │   ├── exit/                       # VPS HTTP handler: decrypt, demux, dial upstream
 │   └── config/                     # JSON config loaders
+├── bench/
+│   ├── harness/main.go             # E2E benchmark: real binaries, loopback sink
+│   ├── sink/main.go                # TCP sink (echo / sized / source / quick modes)
+│   ├── diff/main.go                # JSON result comparator with noise-floor logic
+│   ├── baselines/                  # Committed baseline JSON files
+│   └── bench.sh                   # Build + run + compare orchestrator
 ├── apps_script/
 │   └── Code.gs                     # ~30-line dumb forwarder
 ├── scripts/
@@ -432,6 +440,27 @@ GooseRelayVPN/
 - **Apps Script logs every `doPost` invocation** in Google's dashboard (count and duration only — Apps Script never sees plaintext).
 - **Keep `socks_host` on the client at `127.0.0.1`** unless you specifically want LAN sharing.
 - **Each Apps Script deployment is rate-limited to ~20,000 calls/day** on free Google accounts.
+
+---
+
+## Contributing
+
+Pull requests are welcome. For any change that touches the carrier loop, session layer, or poll behavior, please include benchmark results so reviewers can evaluate the performance impact.
+
+The `bench/` directory contains an end-to-end harness that spins up real `goose-client` and `goose-server` binaries against a loopback TCP sink and measures throughput, TTFB, session rate, and idle CPU.
+
+```bash
+# Build the binaries and run the full benchmark suite
+bash bench/bench.sh
+```
+
+The harness compares your working tree against the committed baseline in `bench/baselines/` and prints a side-by-side table. Regressions above the noise floor fail the script with exit code 1. Include the output in your PR description.
+
+To record a new baseline from a specific git ref:
+
+```bash
+bash bench/bench.sh --update <ref>   # e.g. --update v1.3.0 or --update HEAD
+```
 
 ---
 

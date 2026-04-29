@@ -181,7 +181,10 @@ func main() {
 
 	go func() {
 		log.Printf("[client] ready: local SOCKS5 is listening on %s", cfg.ListenAddr)
-		if err := socks.Serve(ctx, cfg.ListenAddr, factory); err != nil {
+		if cfg.SocksUser != "" {
+			log.Printf("[client] SOCKS5 auth enabled (RFC 1929 username/password required)")
+		}
+		if err := socks.Serve(ctx, cfg.ListenAddr, cfg.SocksUser, cfg.SocksPass, factory); err != nil {
 			log.Fatalf("socks: %v", err)
 		}
 	}()

@@ -21,11 +21,14 @@ type SessionFactory func(target string) *session.Session
 // a VirtualConn over a fresh tunneled session. The DNS resolver is overridden
 // with a no-op to prevent local DNS leaks (clients must use socks5h://).
 //
+// When user and pass are both non-empty, RFC 1929 username/password
+// authentication is required; unauthenticated clients are rejected.
+//
 // Blocks until ListenAndServe returns. Caller passes ctx for shutdown
 // signaling (the underlying go-socks5 library doesn't take a ctx, so this
 // just wires it through for parity with the rest of the codebase).
-func Serve(_ context.Context, listenAddr string, factory SessionFactory) error {
-	server := socks5.NewServer(
+func Serve(_ context.Context, listenAddr, user, pass string, factory SessionFactory) error {
+	opts := []socks5.Option{
 		socks5.WithDial(func(_ context.Context, _, addr string) (net.Conn, error) {
 			s := factory(addr)
 			log.Printf("[socks] new session %x for %s", s.ID[:4], addr)
@@ -36,7 +39,15 @@ func Serve(_ context.Context, listenAddr string, factory SessionFactory) error {
 			return fmt.Errorf("UDP associate not supported")
 		}),
 		socks5.WithResolver(noopResolver{}),
-	)
+	}
+	if user != "" {
+		opts = append(opts, socks5.WithAuthMethods([]socks5.Authenticator{
+			socks5.UserPassAuthenticator{
+				Credentials: socks5.StaticCredentials{user: pass},
+			},
+		}))
+	}
+	server := socks5.NewServer(opts...)
 	return server.ListenAndServe("tcp", listenAddr)
 }
 
