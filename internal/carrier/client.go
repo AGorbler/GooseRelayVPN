@@ -24,9 +24,10 @@ const (
 	// Unmarshal calls). Must match the value in internal/exit/exit.go.
 	MaxFramePayload = 256 * 1024
 
-	// pollIdleSleep is the breather between polls when nothing is happening,
-	// to avoid busy-looping if the server returns instantly with empty bodies.
-	pollIdleSleep = 50 * time.Millisecond
+	// pollIdleSleep is the breather between polls when nothing is happening.
+	// 10ms instead of 50ms: keeps workers responsive to kick() misses and
+	// idle-slot retry at negligible CPU cost at true idle.
+	pollIdleSleep = 10 * time.Millisecond
 
 	// pollTimeout is the per-request HTTP ceiling; should comfortably exceed
 	// the server's long-poll window (~25s).
