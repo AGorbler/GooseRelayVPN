@@ -142,6 +142,25 @@ func (s *Session) EnqueueTx(data []byte) {
 	}
 }
 
+// EnqueueInitialData prepends data to the tx buffer if the SYN hasn't been sent
+// yet. Used by the connect_data optimization.
+func (s *Session) EnqueueInitialData(data []byte) {
+	s.mu.Lock()
+	if !s.synNeeded {
+		// Too late, SYN already sent. Just regular enqueue.
+		s.mu.Unlock()
+		s.EnqueueTx(data)
+		return
+	}
+	// Prepend to txBuf so it's picked up by the first DrainTx call.
+	s.txBuf = append(data, s.txBuf...)
+	cb := s.OnTx
+	s.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+}
+
 // RequestClose marks the session for shutdown. The next DrainTx will emit a
 // FIN frame, and EnqueueTx becomes a no-op.
 func (s *Session) RequestClose() {

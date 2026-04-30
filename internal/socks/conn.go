@@ -2,6 +2,7 @@
 package socks
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
@@ -16,9 +17,10 @@ import (
 //
 // Ported from FlowDriver/internal/transport/conn.go.
 type VirtualConn struct {
-	s       *session.Session
-	mu      sync.Mutex
-	readBuf []byte
+	s            *session.Session
+	mu           sync.Mutex
+	readBuf      []byte
+	readDeadline time.Time
 }
 
 func NewVirtualConn(s *session.Session) *VirtualConn { return &VirtualConn{s: s} }
@@ -32,28 +34,44 @@ func (v *VirtualConn) Read(b []byte) (int, error) {
 			v.mu.Unlock()
 			return n, nil
 		}
+		deadline := v.readDeadline
 		v.mu.Unlock()
 
-		data, ok := <-v.s.RxChan
-		if !ok {
-			return 0, io.EOF
+		var timerCh <-chan time.Time
+		if !deadline.IsZero() {
+			dur := time.Until(deadline)
+			if dur <= 0 {
+				return 0, context.DeadlineExceeded
+			}
+			timerCh = time.After(dur)
 		}
-		if len(data) == 0 {
-			continue
+
+		select {
+		case data, ok := <-v.s.RxChan:
+			if !ok {
+				return 0, io.EOF
+			}
+			if len(data) == 0 {
+				continue
+			}
+			v.mu.Lock()
+			n := copy(b, data)
+			if n < len(data) {
+				v.readBuf = data[n:]
+			}
+			v.mu.Unlock()
+			return n, nil
+		case <-timerCh:
+			return 0, context.DeadlineExceeded
 		}
-		v.mu.Lock()
-		n := copy(b, data)
-		if n < len(data) {
-			v.readBuf = data[n:]
-		}
-		v.mu.Unlock()
-		return n, nil
 	}
 }
 
 func (v *VirtualConn) Write(b []byte) (int, error) {
 	if len(b) > 0 {
-		v.s.EnqueueTx(b)
+		// connect_data optimization: if this is the first write for a new
+		// session and the SYN hasn't been sent yet, bundle it.
+		v.s.EnqueueInitialData(b)
 	}
 	return len(b), nil
 }
@@ -69,6 +87,16 @@ func (v *VirtualConn) LocalAddr() net.Addr {
 func (v *VirtualConn) RemoteAddr() net.Addr {
 	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
 }
-func (v *VirtualConn) SetDeadline(t time.Time) error      { return nil }
-func (v *VirtualConn) SetReadDeadline(t time.Time) error  { return nil }
+func (v *VirtualConn) SetDeadline(t time.Time) error {
+	v.mu.Lock()
+	v.readDeadline = t
+	v.mu.Unlock()
+	return nil
+}
+func (v *VirtualConn) SetReadDeadline(t time.Time) error {
+	v.mu.Lock()
+	v.readDeadline = t
+	v.mu.Unlock()
+	return nil
+}
 func (v *VirtualConn) SetWriteDeadline(t time.Time) error { return nil }
