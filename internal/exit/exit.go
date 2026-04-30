@@ -98,17 +98,17 @@ type Config struct {
 
 // Server holds the per-process session state.
 type Server struct {
-	cfg          Config
-	aead         *frame.Crypto
-	dial         func(network, address string, timeout time.Duration) (net.Conn, error)
-	dns          *dnsCache
-	debugTiming  bool
+	cfg         Config
+	aead        *frame.Crypto
+	dial        func(network, address string, timeout time.Duration) (net.Conn, error)
+	dns         *dnsCache
+	debugTiming bool
 
 	mu           sync.Mutex
 	sessions     map[[frame.SessionIDLen]byte]*session.Session
-	txReady      map[[frame.SessionIDLen]byte]struct{} // sessions with pending TX frames
-	firstReply   map[[frame.SessionIDLen]byte]struct{} // sessions whose first downstream batch hasn't been sent yet
-	upstreams    map[[frame.SessionIDLen]byte]net.Conn // upstream conn per session, kept so GC can force-close
+	txReady      map[[frame.SessionIDLen]byte]struct{}  // sessions with pending TX frames
+	firstReply   map[[frame.SessionIDLen]byte]struct{}  // sessions whose first downstream batch hasn't been sent yet
+	upstreams    map[[frame.SessionIDLen]byte]net.Conn  // upstream conn per session, kept so GC can force-close
 	lastActivity map[[frame.SessionIDLen]byte]time.Time // last time the client sent a frame for this session
 	dialFail     map[string]time.Time
 	pendingRSTs  []*frame.Frame // RST frames to send back on the next response
@@ -314,10 +314,15 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) drainWindow(rxFrames []*frame.Frame) time.Duration {
-	for _, f := range rxFrames {
-		if f.HasFlag(frame.FlagSYN) || len(f.Payload) > 0 {
-			return ActiveDrainWindow
-		}
+	// Any non-empty client batch was a directed action (SYN, data, FIN, RST):
+	// the worker that posted it is blocked waiting for our response and has
+	// nothing else to do until we return. Use the short ActiveDrainWindow so
+	// these workers come back into the pool quickly and back-to-back
+	// connection setup/teardown cycles aren't gated on LongPollWindow (8s).
+	// Only truly empty polls (idle long-polls) keep the long window so the
+	// server can push downstream data without forcing constant repolling.
+	if len(rxFrames) > 0 {
+		return ActiveDrainWindow
 	}
 	return LongPollWindow
 }
@@ -507,6 +512,11 @@ func (s *Server) drainAll() ([]*frame.Frame, bool) {
 				urgent = true
 				delete(s.firstReply, id)
 			}
+			// Outbound traffic also counts as session liveness; without this
+			// a long pure-download session (large file, video stream) with no
+			// client→server frames would be force-closed by the idle GC after
+			// idleSessionTimeout even though it is actively delivering data.
+			s.lastActivity[id] = time.Now()
 		}
 		out = append(out, frames...)
 		remaining -= len(frames)
