@@ -66,7 +66,7 @@ func (c *Client) Diagnose(ctx context.Context) error {
 		SessionID: probeID,
 		Flags:     frame.FlagACK,
 	}
-	body, err := frame.EncodeBatch(c.aead, []*frame.Frame{probeFrame})
+	body, err := frame.EncodeBatch(c.aead, c.clientID, []*frame.Frame{probeFrame})
 	if err != nil {
 		return fmt.Errorf("internal: cannot encode probe batch: %w", err)
 	}
@@ -99,7 +99,7 @@ func (c *Client) Diagnose(ctx context.Context) error {
 	if isLikelyNonBatchRelayPayload(respBody) {
 		return fmt.Errorf("relay returned a non-batch response.\n  The Apps Script deployment may be misconfigured or hitting a quota error: %s", snippet(respBody))
 	}
-	if _, err := frame.DecodeBatch(c.aead, respBody); err != nil {
+	if _, _, err := frame.DecodeBatch(c.aead, respBody); err != nil {
 		return fmt.Errorf("response from VPS could not be decrypted (%v).\n  Most likely cause: AES key mismatch. tunnel_key in client_config.json must be byte-identical to server_config.json on the VPS", err)
 	}
 	return nil

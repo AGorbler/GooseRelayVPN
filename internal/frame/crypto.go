@@ -69,11 +69,18 @@ func (c *Crypto) Open(envelope []byte) ([]byte, error) {
 	return pt, nil
 }
 
+// ClientIDLen is the length of the per-process client identifier prepended to
+// every batch. Clients pick a random ClientID once at startup; the server uses
+// it to partition sessions so that downstream frames generated for one client
+// are never delivered to a different client polling the same server.
+const ClientIDLen = 16
+
 // EncodeBatch packs zero or more frames into a base64-encoded HTTP body.
 //
 // Wire format (before base64):
 //
 //	nonce (12 bytes) || AES-GCM ciphertext+tag over:
+//	    client_id (16 bytes)
 //	    u16 frame_count
 //	    for each frame: u32 marshaled_len || marshaled_frame_bytes
 //
@@ -81,14 +88,19 @@ func (c *Crypto) Open(envelope []byte) ([]byte, error) {
 // This reduces crypto overhead from O(N) nonces+tags to one, cutting both CPU
 // and wire bytes significantly for large batches.
 // base64 is retained for Apps Script's ContentService text requirement.
-func EncodeBatch(c *Crypto, frames []*Frame) ([]byte, error) {
+//
+// The client_id is sent inside the encrypted plaintext (not as an HTTP header)
+// because the Apps Script forwarder only relays the request body — headers do
+// not survive the hop. Sealing it under AES-GCM also means a passive observer
+// of the relay traffic cannot tell two clients apart by their IDs.
+func EncodeBatch(c *Crypto, clientID [ClientIDLen]byte, frames []*Frame) ([]byte, error) {
 	if len(frames) > 0xFFFF {
 		return nil, fmt.Errorf("batch: too many frames: %d", len(frames))
 	}
 
 	// Marshal all frames first so we know the exact plaintext size.
 	marshaled := make([][]byte, len(frames))
-	plainSize := 2 // u16 frame count
+	plainSize := ClientIDLen + 2 // client_id + u16 frame count
 	for i, f := range frames {
 		raw, err := f.Marshal()
 		if err != nil {
@@ -99,6 +111,7 @@ func EncodeBatch(c *Crypto, frames []*Frame) ([]byte, error) {
 	}
 
 	plain := make([]byte, 0, plainSize)
+	plain = append(plain, clientID[:]...)
 	plain = append(plain, byte(len(frames)>>8), byte(len(frames)))
 	for _, raw := range marshaled {
 		plain = append(plain,
@@ -121,9 +134,10 @@ func EncodeBatch(c *Crypto, frames []*Frame) ([]byte, error) {
 // Since c.Open always allocates a fresh slice, this is safe as long as callers
 // treat Frame.Payload as read-only — which session.ProcessRx and upstream.Write
 // both do.
-func DecodeBatch(c *Crypto, body []byte) ([]*Frame, error) {
+func DecodeBatch(c *Crypto, body []byte) ([ClientIDLen]byte, []*Frame, error) {
+	var zeroID [ClientIDLen]byte
 	if len(body) == 0 {
-		return nil, nil
+		return zeroID, nil, nil
 	}
 	// bytes.TrimSpace returns a subslice (no alloc); Decode writes into a
 	// pre-allocated buffer — together this is one allocation instead of three.
@@ -131,36 +145,39 @@ func DecodeBatch(c *Crypto, body []byte) ([]*Frame, error) {
 	sealed := make([]byte, base64.StdEncoding.DecodedLen(len(trimmed)))
 	n, err := base64.StdEncoding.Decode(sealed, trimmed)
 	if err != nil {
-		return nil, fmt.Errorf("batch: base64 decode: %w", err)
+		return zeroID, nil, fmt.Errorf("batch: base64 decode: %w", err)
 	}
 	sealed = sealed[:n]
 
 	plain, err := c.Open(sealed)
 	if err != nil {
-		return nil, fmt.Errorf("batch: open: %w", err)
+		return zeroID, nil, fmt.Errorf("batch: open: %w", err)
 	}
 
-	if len(plain) < 2 {
-		return nil, errors.New("batch: short header")
+	if len(plain) < ClientIDLen+2 {
+		return zeroID, nil, errors.New("batch: short header")
 	}
-	count := int(binary.BigEndian.Uint16(plain[:2]))
-	off := 2
+	var clientID [ClientIDLen]byte
+	copy(clientID[:], plain[:ClientIDLen])
+	off := ClientIDLen
+	count := int(binary.BigEndian.Uint16(plain[off : off+2]))
+	off += 2
 	frames := make([]*Frame, 0, count)
 	for i := 0; i < count; i++ {
 		if len(plain) < off+4 {
-			return nil, errors.New("batch: short frame length")
+			return zeroID, nil, errors.New("batch: short frame length")
 		}
 		flen := int(binary.BigEndian.Uint32(plain[off:]))
 		off += 4
 		if len(plain) < off+flen {
-			return nil, errors.New("batch: short frame body")
+			return zeroID, nil, errors.New("batch: short frame body")
 		}
 		f, _, err := Unmarshal(plain[off : off+flen])
 		if err != nil {
-			return nil, fmt.Errorf("batch: unmarshal frame %d: %w", i, err)
+			return zeroID, nil, fmt.Errorf("batch: unmarshal frame %d: %w", i, err)
 		}
 		frames = append(frames, f)
 		off += flen
 	}
-	return frames, nil
+	return clientID, frames, nil
 }

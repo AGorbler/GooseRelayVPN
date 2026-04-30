@@ -26,7 +26,7 @@ func echoServer(t *testing.T, aead *frame.Crypto) (*httptest.Server, *int) {
 		hits++
 		mu.Unlock()
 		body, _ := io.ReadAll(r.Body)
-		in, err := frame.DecodeBatch(aead, body)
+		clientID, in, err := frame.DecodeBatch(aead, body)
 		if err != nil {
 			t.Errorf("server decode: %v", err)
 			w.WriteHeader(500)
@@ -44,7 +44,7 @@ func echoServer(t *testing.T, aead *frame.Crypto) (*httptest.Server, *int) {
 			})
 		}
 		mu.Unlock()
-		respBody, _ := frame.EncodeBatch(aead, out)
+		respBody, _ := frame.EncodeBatch(aead, clientID, out)
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write(respBody)
 	}))
@@ -106,7 +106,8 @@ func TestCarrier_UnknownSessionFramesDropped(t *testing.T) {
 		for i := range unknown {
 			unknown[i] = 0xEE
 		}
-		body, _ := frame.EncodeBatch(aead, []*frame.Frame{
+		var ghostClient [frame.ClientIDLen]byte
+		body, _ := frame.EncodeBatch(aead, ghostClient, []*frame.Frame{
 			{SessionID: unknown, Seq: 0, Payload: []byte("ghost")},
 		})
 		w.Header().Set("Content-Type", "text/plain")

@@ -112,6 +112,11 @@ type Client struct {
 	debugTiming bool
 	numWorkers  int // workersPerEndpoint × len(endpoints)
 
+	// clientID is a random 16-byte identifier minted once per process. It is
+	// embedded in every encrypted batch so the server can route downstream
+	// frames back to the correct client when several clients share one server.
+	clientID [frame.ClientIDLen]byte
+
 	// debugStarts tracks session start times when debugTiming is on so we can
 	// log time-to-first-byte once each session receives its first downstream
 	// frame. Entries are deleted on first rx.
@@ -172,12 +177,20 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("at least one script URL is required")
 	}
 
+	var clientID [frame.ClientIDLen]byte
+	if _, err := rand.Read(clientID[:]); err != nil {
+		// crypto/rand failure is unrecoverable; fail fast rather than emitting
+		// an all-zero ID that would collide with every other unupgraded client.
+		return nil, fmt.Errorf("crypto/rand: %w", err)
+	}
+
 	return &Client{
 		cfg:         cfg,
 		aead:        aead,
 		httpClients: NewFrontedClients(cfg.Fronting, pollTimeout),
 		debugTiming: cfg.DebugTiming,
 		numWorkers:  workersPerEndpoint * len(endpoints),
+		clientID:    clientID,
 		sessions:    make(map[[frame.SessionIDLen]byte]*session.Session),
 		inFlight:    make(map[[frame.SessionIDLen]byte]bool),
 		txReady:     make(map[[frame.SessionIDLen]byte]struct{}),
@@ -238,7 +251,7 @@ func (c *Client) Shutdown(ctx context.Context) {
 	}
 	c.mu.Unlock()
 
-	body, err := frame.EncodeBatch(c.aead, rsts)
+	body, err := frame.EncodeBatch(c.aead, c.clientID, rsts)
 	if err != nil {
 		log.Printf("[carrier] shutdown: encode failed: %v", err)
 		return
@@ -354,7 +367,7 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 		}
 	}()
 
-	body, err := frame.EncodeBatch(c.aead, frames)
+	body, err := frame.EncodeBatch(c.aead, c.clientID, frames)
 	if err != nil {
 		log.Printf("[carrier] failed to prepare encrypted request batch: %v", err)
 		return false
@@ -447,7 +460,7 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 			return len(frames) > 0
 		}
 
-		rxFrames, decodeErr := frame.DecodeBatch(c.aead, respBody)
+		_, rxFrames, decodeErr := frame.DecodeBatch(c.aead, respBody)
 		if decodeErr != nil {
 			c.markEndpointFailure(endpointIdx)
 			if attempt < maxAttempts {

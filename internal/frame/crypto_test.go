@@ -77,13 +77,17 @@ func TestEncodeDecodeBatch_RoundTrip(t *testing.T) {
 		{SessionID: sid(1), Seq: 1, Payload: []byte("bb")},
 		{SessionID: sid(2), Seq: 0, Flags: FlagACK},
 	}
-	body, err := EncodeBatch(c, in)
+	wantClient := [ClientIDLen]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	body, err := EncodeBatch(c, wantClient, in)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	out, err := DecodeBatch(c, body)
+	gotClient, out, err := DecodeBatch(c, body)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	if gotClient != wantClient {
+		t.Fatalf("clientID: got %x want %x", gotClient, wantClient)
 	}
 	if len(out) != len(in) {
 		t.Fatalf("count: got %d want %d", len(out), len(in))
@@ -100,7 +104,7 @@ func TestEncodeDecodeBatch_RoundTrip(t *testing.T) {
 
 func TestDecodeBatch_EmptyBody(t *testing.T) {
 	c := newTestCrypto(t)
-	out, err := DecodeBatch(c, nil)
+	_, out, err := DecodeBatch(c, nil)
 	if err != nil {
 		t.Fatalf("decode empty: %v", err)
 	}
@@ -119,7 +123,8 @@ func benchSealOpenBatch(b *testing.B, frames int, payloadSize int) {
 	for i := range in {
 		in[i] = &Frame{SessionID: sid(byte(i)), Seq: uint64(i), Payload: pl}
 	}
-	body, err := EncodeBatch(c, in)
+	var benchClient [ClientIDLen]byte
+	body, err := EncodeBatch(c, benchClient, in)
 	if err != nil {
 		b.Fatalf("encode: %v", err)
 	}
@@ -127,11 +132,11 @@ func benchSealOpenBatch(b *testing.B, frames int, payloadSize int) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		body, err := EncodeBatch(c, in)
+		body, err := EncodeBatch(c, benchClient, in)
 		if err != nil {
 			b.Fatalf("encode: %v", err)
 		}
-		if _, err := DecodeBatch(c, body); err != nil {
+		if _, _, err := DecodeBatch(c, body); err != nil {
 			b.Fatalf("decode: %v", err)
 		}
 	}
@@ -148,11 +153,12 @@ func TestDecodeBatch_TamperedBatchFails(t *testing.T) {
 		{SessionID: sid(1), Seq: 0, Payload: []byte("good1")},
 		{SessionID: sid(1), Seq: 1, Payload: []byte("good2")},
 	}
-	body, _ := EncodeBatch(c, in)
+	var zeroClient [ClientIDLen]byte
+	body, _ := EncodeBatch(c, zeroClient, in)
 	raw, _ := base64.StdEncoding.DecodeString(string(body))
 	raw[len(raw)/2] ^= 0x01 // flip a bit in the middle of the ciphertext
 	tampered := []byte(base64.StdEncoding.EncodeToString(raw))
-	if _, err := DecodeBatch(c, tampered); err == nil {
+	if _, _, err := DecodeBatch(c, tampered); err == nil {
 		t.Fatal("expected auth error on tampered batch, got nil")
 	}
 }

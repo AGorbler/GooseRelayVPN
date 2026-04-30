@@ -115,16 +115,22 @@ type Server struct {
 	dns         *dnsCache
 	debugTiming bool
 
-	mu           sync.Mutex
-	sessions     map[[frame.SessionIDLen]byte]*session.Session
-	txReady      map[[frame.SessionIDLen]byte]struct{}  // sessions with pending TX frames
-	firstReply   map[[frame.SessionIDLen]byte]struct{}  // sessions whose first downstream batch hasn't been sent yet
-	upstreams    map[[frame.SessionIDLen]byte]net.Conn  // upstream conn per session, kept so GC can force-close
-	lastActivity map[[frame.SessionIDLen]byte]time.Time // last time the client sent a frame for this session
-	dialFail     map[string]time.Time
-	pendingRSTs  []*frame.Frame // RST frames to send back on the next response
+	mu            sync.Mutex
+	sessions      map[[frame.SessionIDLen]byte]*session.Session
+	sessionOwners map[[frame.SessionIDLen]byte][frame.ClientIDLen]byte // sessionID -> owning clientID
+	txReady       map[[frame.SessionIDLen]byte]struct{}                // sessions with pending TX frames
+	firstReply    map[[frame.SessionIDLen]byte]struct{}                // sessions whose first downstream batch hasn't been sent yet
+	upstreams     map[[frame.SessionIDLen]byte]net.Conn                // upstream conn per session, kept so GC can force-close
+	lastActivity  map[[frame.SessionIDLen]byte]time.Time                // last time the client sent a frame for this session
+	dialFail      map[string]time.Time
+	pendingRSTs   map[[frame.ClientIDLen]byte][]*frame.Frame // RSTs queued per requesting client
 
-	activity chan struct{} // buffered len 1; coalesces "session has new tx" signals
+	// activity is a per-client wake channel. handleTunnel waits on the
+	// channel for its own clientID; openSession's TX callback kicks the
+	// owning client's channel. This stops one client's traffic from
+	// repeatedly waking another client's idle long-poll, which would
+	// otherwise return empty and burn through HTTP requests.
+	activity map[[frame.ClientIDLen]byte]chan struct{}
 	stats    serverStats
 }
 
@@ -151,18 +157,20 @@ func New(cfg Config) (*Server, error) {
 	}
 	dialFn := dialFunc(cfg.UpstreamProxy)
 	return &Server{
-		cfg:          cfg,
-		aead:         aead,
-		dial:         dialFn,
-		dns:          newDNSCache(),
-		debugTiming:  cfg.DebugTiming,
-		sessions:     make(map[[frame.SessionIDLen]byte]*session.Session),
-		txReady:      make(map[[frame.SessionIDLen]byte]struct{}),
-		firstReply:   make(map[[frame.SessionIDLen]byte]struct{}),
-		upstreams:    make(map[[frame.SessionIDLen]byte]net.Conn),
-		lastActivity: make(map[[frame.SessionIDLen]byte]time.Time),
-		dialFail:     make(map[string]time.Time),
-		activity:     make(chan struct{}, 1),
+		cfg:           cfg,
+		aead:          aead,
+		dial:          dialFn,
+		dns:           newDNSCache(),
+		debugTiming:   cfg.DebugTiming,
+		sessions:      make(map[[frame.SessionIDLen]byte]*session.Session),
+		sessionOwners: make(map[[frame.SessionIDLen]byte][frame.ClientIDLen]byte),
+		txReady:       make(map[[frame.SessionIDLen]byte]struct{}),
+		firstReply:    make(map[[frame.SessionIDLen]byte]struct{}),
+		upstreams:     make(map[[frame.SessionIDLen]byte]net.Conn),
+		lastActivity:  make(map[[frame.SessionIDLen]byte]time.Time),
+		dialFail:      make(map[string]time.Time),
+		pendingRSTs:   make(map[[frame.ClientIDLen]byte][]*frame.Frame),
+		activity:      make(map[[frame.ClientIDLen]byte]chan struct{}),
 	}, nil
 }
 
@@ -233,7 +241,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rxFrames, err := frame.DecodeBatch(s.aead, body)
+	clientID, rxFrames, err := frame.DecodeBatch(s.aead, body)
 	if err != nil {
 		s.stats.decodeFailures.Add(1)
 		// Decode failure on the very first batch from a client almost always
@@ -253,14 +261,19 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, f := range rxFrames {
-		s.routeIncoming(f)
+		s.routeIncoming(f, clientID)
 	}
+
+	// Capture the per-client wake channel before entering the wait loop so a
+	// kick that fires between drainAll() returning empty and us blocking on
+	// the channel is not lost.
+	wakeCh := s.activityFor(clientID)
 
 	// Active batches use a shorter wait to avoid stalling unrelated sessions,
 	// while empty polls keep long-poll behavior for push responsiveness.
 	deadline := time.Now().Add(s.drainWindow(rxFrames))
 	for {
-		txFrames, urgent := s.drainAll()
+		txFrames, urgent := s.drainAll(clientID)
 		if len(txFrames) > 0 {
 			// Coalesce bursts into one response to reduce per-request overhead,
 			// but only when the batch is large enough to be bulk/video traffic.
@@ -279,8 +292,8 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 					select {
 					case <-r.Context().Done():
 						return
-					case <-s.activity:
-						more, _ := s.drainAll()
+					case <-wakeCh:
+						more, _ := s.drainAll(clientID)
 						txFrames = append(txFrames, more...)
 					case <-time.After(remainingCoalesce):
 						break coalesceLoop
@@ -288,7 +301,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			respBody, err := frame.EncodeBatch(s.aead, txFrames)
+			respBody, err := frame.EncodeBatch(s.aead, clientID, txFrames)
 			if err != nil {
 				log.Printf("[exit] encode response: %v", err)
 				w.WriteHeader(http.StatusInternalServerError)
@@ -308,7 +321,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			// Empty response (still a valid base64-encoded zero-frame batch).
-			respBody, _ := frame.EncodeBatch(s.aead, nil)
+			respBody, _ := frame.EncodeBatch(s.aead, clientID, nil)
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = w.Write(respBody)
 			return
@@ -316,7 +329,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case <-s.activity:
+		case <-wakeCh:
 			// loop and drain
 		case <-time.After(remaining):
 			// loop one more time, then exit on next iteration
@@ -354,34 +367,40 @@ func (s *Server) coalesceDuration(currentFrames int) time.Duration {
 }
 
 // routeIncoming routes one incoming frame to its session, creating the session
-// (and dialing upstream) if this is a SYN.
-func (s *Server) routeIncoming(f *frame.Frame) {
+// (and dialing upstream) if this is a SYN. owner is the clientID of the
+// requesting client; non-SYN frames for an existing session are rejected when
+// they come from a different client (collision or spoof).
+func (s *Server) routeIncoming(f *frame.Frame, owner [frame.ClientIDLen]byte) {
 	s.mu.Lock()
 	sess, exists := s.sessions[f.SessionID]
+	existingOwner, hasOwner := s.sessionOwners[f.SessionID]
 	s.mu.Unlock()
+
+	if exists && hasOwner && existingOwner != owner {
+		// Different client claiming an active session ID — astronomically
+		// unlikely with random 16-byte IDs, but possible if a client reused an
+		// ID from a previous process. Reject to keep clients isolated.
+		log.Printf("[exit] cross-client session collision on %x; sending RST to %x",
+			f.SessionID[:4], owner[:4])
+		s.queueRST(owner, f.SessionID)
+		s.stats.rstSent.Add(1)
+		return
+	}
 
 	if !exists {
 		if !f.HasFlag(frame.FlagSYN) {
 			log.Printf("[exit] frame for unknown session (no SYN), sending RST")
-			rst := &frame.Frame{SessionID: f.SessionID, Flags: frame.FlagRST}
-			s.mu.Lock()
-			s.pendingRSTs = append(s.pendingRSTs, rst)
-			s.mu.Unlock()
+			s.queueRST(owner, f.SessionID)
 			s.stats.rstSent.Add(1)
-			s.kick()
 			return
 		}
 		if s.isDialSuppressed(f.Target) {
-			rst := &frame.Frame{SessionID: f.SessionID, Flags: frame.FlagRST}
-			s.mu.Lock()
-			s.pendingRSTs = append(s.pendingRSTs, rst)
-			s.mu.Unlock()
+			s.queueRST(owner, f.SessionID)
 			s.stats.rstSent.Add(1)
-			s.kick()
 			return
 		}
 		var err error
-		sess, err = s.openSession(f.SessionID, f.Target)
+		sess, err = s.openSession(f.SessionID, f.Target, owner)
 		if err != nil {
 			s.recordDialFailure(f.Target, err)
 			s.stats.dialsFail.Add(1)
@@ -401,9 +420,21 @@ func (s *Server) routeIncoming(f *frame.Frame) {
 	s.mu.Unlock()
 }
 
+// queueRST enqueues a RST frame for the given session to be delivered to
+// owner on its next poll. Also wakes that client's long-poll so the RST is
+// flushed immediately rather than after the long-poll deadline.
+func (s *Server) queueRST(owner [frame.ClientIDLen]byte, sessionID [frame.SessionIDLen]byte) {
+	rst := &frame.Frame{SessionID: sessionID, Flags: frame.FlagRST}
+	s.mu.Lock()
+	s.pendingRSTs[owner] = append(s.pendingRSTs[owner], rst)
+	s.mu.Unlock()
+	s.kick(owner)
+}
+
 // openSession dials the upstream target, creates a Session for the given ID,
-// registers it, and spawns the bidirectional pump goroutines.
-func (s *Server) openSession(id [frame.SessionIDLen]byte, target string) (*session.Session, error) {
+// registers it under the given owner, and spawns the bidirectional pump
+// goroutines.
+func (s *Server) openSession(id [frame.SessionIDLen]byte, target string, owner [frame.ClientIDLen]byte) (*session.Session, error) {
 	var upstream net.Conn
 	var res *dialResult
 	if s.cfg.UpstreamProxy != "" {
@@ -443,18 +474,19 @@ func (s *Server) openSession(id [frame.SessionIDLen]byte, target string) (*sessi
 		s.mu.Lock()
 		s.txReady[id] = struct{}{}
 		s.mu.Unlock()
-		s.kick()
+		s.kick(owner)
 	}
 
 	s.mu.Lock()
 	s.sessions[id] = sess
+	s.sessionOwners[id] = owner
 	s.upstreams[id] = upstream
 	s.firstReply[id] = struct{}{}
 	s.lastActivity[id] = time.Now()
 	s.mu.Unlock()
 	s.stats.sessionsOpen.Add(1)
 
-	log.Printf("[exit] new session %x -> %s", id[:4], target)
+	log.Printf("[exit] new session %x owner=%x -> %s", id[:4], owner[:4], target)
 
 	// Upstream → session.EnqueueTx (downstream direction).
 	go func() {
@@ -498,19 +530,24 @@ func (s *Server) openSession(id [frame.SessionIDLen]byte, target string) (*sessi
 	return sess, nil
 }
 
-// drainAll returns all currently-buffered TX frames plus an `urgent` flag
-// signalling that at least one drained session is delivering its first
-// downstream batch (e.g. TLS server hello after SYN). The caller skips the
-// normal coalesce wait when urgent is set so connection setup isn't delayed
-// by 25 ms on every new TLS handshake.
-func (s *Server) drainAll() ([]*frame.Frame, bool) {
+// drainAll returns all currently-buffered TX frames belonging to owner, plus
+// an `urgent` flag signalling that at least one drained session is delivering
+// its first downstream batch (e.g. TLS server hello after SYN). The caller
+// skips the normal coalesce wait when urgent is set so connection setup isn't
+// delayed by 25 ms on every new TLS handshake.
+//
+// Filtering by owner is what keeps multiple clients on the same server
+// isolated: without it, whichever client's HTTP request reaches drainAll
+// first would receive every other client's downstream frames and silently
+// drop them, breaking every TLS stream in flight.
+func (s *Server) drainAll(owner [frame.ClientIDLen]byte) ([]*frame.Frame, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []*frame.Frame
 	var urgent bool
-	if len(s.pendingRSTs) > 0 {
-		out = append(out, s.pendingRSTs...)
-		s.pendingRSTs = s.pendingRSTs[:0]
+	if rsts := s.pendingRSTs[owner]; len(rsts) > 0 {
+		out = append(out, rsts...)
+		delete(s.pendingRSTs, owner)
 		urgent = true // RSTs are always urgent — client should know immediately
 	}
 	batchCap := maxDrainFramesPerBatch
@@ -521,6 +558,11 @@ func (s *Server) drainAll() ([]*frame.Frame, bool) {
 	for id := range s.txReady {
 		if remaining <= 0 {
 			break
+		}
+		if s.sessionOwners[id] != owner {
+			// Belongs to a different client; leave the txReady entry in place
+			// so that client's poll picks it up.
+			continue
 		}
 		sess, ok := s.sessions[id]
 		if !ok {
@@ -557,6 +599,7 @@ func (s *Server) gcDoneSessions() {
 		if sess.IsDone() {
 			sess.Stop()
 			delete(s.sessions, id)
+			delete(s.sessionOwners, id)
 			delete(s.txReady, id)
 			delete(s.firstReply, id)
 			delete(s.upstreams, id)
@@ -602,6 +645,7 @@ func (s *Server) gcIdleSessions() {
 			idleFor:  time.Since(last),
 		})
 		delete(s.sessions, id)
+		delete(s.sessionOwners, id)
 		delete(s.txReady, id)
 		delete(s.firstReply, id)
 		delete(s.upstreams, id)
@@ -641,11 +685,30 @@ func (s *Server) runIdleGCLoop(ctx context.Context) {
 	}
 }
 
-func (s *Server) kick() {
+// kick wakes the long-poll handler currently serving owner so it drains
+// pending TX frames immediately. A non-blocking send keeps repeated kicks
+// from blocking the upstream-read goroutine when the owner is not currently
+// polling — the buffered len-1 channel collapses bursts into a single wake.
+func (s *Server) kick(owner [frame.ClientIDLen]byte) {
+	ch := s.activityFor(owner)
 	select {
-	case s.activity <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
+}
+
+// activityFor returns owner's wake channel, lazily allocating it on first
+// use. Channels are kept for the life of the server; with a small number of
+// distinct clients per server this is fine.
+func (s *Server) activityFor(owner [frame.ClientIDLen]byte) chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch, ok := s.activity[owner]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		s.activity[owner] = ch
+	}
+	return ch
 }
 
 func (s *Server) isDialSuppressed(target string) bool {
