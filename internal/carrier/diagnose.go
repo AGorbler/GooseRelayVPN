@@ -50,7 +50,10 @@ func (c *Client) Diagnose(ctx context.Context) error {
 		if bytes.Contains(bytes.ToLower(getBody), []byte("<html")) {
 			return fmt.Errorf("deployment %s is not public (Apps Script returned HTML instead of the forwarder).\n  Fix: Deploy → Manage deployments → edit → set 'Who has access' to 'Anyone' and re-deploy", shortScriptKey(scriptURL))
 		}
-		return fmt.Errorf("unexpected response from Apps Script %s (HTTP %d): %s", shortScriptKey(scriptURL), getResp.StatusCode, snippet(getBody))
+		trimmed := bytes.TrimSpace(getBody)
+		if len(trimmed) == 0 || trimmed[0] != '{' || !bytes.Contains(trimmed, []byte("\"ok\":true")) {
+			return fmt.Errorf("unexpected response from Apps Script %s (HTTP %d): %s", shortScriptKey(scriptURL), getResp.StatusCode, snippet(getBody))
+		}
 	}
 
 	// --- Probe 2: POST an encrypted probe frame to verify VPS reachability and AES key. ---
