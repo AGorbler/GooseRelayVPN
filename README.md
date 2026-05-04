@@ -477,6 +477,7 @@ GooseRelayVPN/
 
 | Problem | Solution |
 |---|---|
+| `cannot execute binary file: Exec format error` when running `goose-server` or `goose-client` | You downloaded the wrong archive for your OS/architecture. The folder name tells you what you got — e.g. `…-darwin-amd64` is a **macOS** binary and won't run on Linux. Re-download the matching archive (Linux VPS → `linux-amd64`; Apple Silicon Mac → `darwin-arm64`; Termux → `android-arm64`). |
 | Pre-flight fails: `cannot reach Apps Script` | Your internet connection can't reach Google. Check `google_host` — try a different IP from the 216.239.x.120 range. |
 | Pre-flight fails: `HTTP 204 — key mismatch` | The `tunnel_key` in `client_config.json` doesn't match the one in `server_config.json` on the VPS. They must be byte-identical. |
 | Pre-flight fails: `Apps Script cannot reach your VPS` | Port 8443 on your VPS is not reachable. Run `sudo ufw allow 8443/tcp` on the VPS and check your cloud provider's firewall rules. |
