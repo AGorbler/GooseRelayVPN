@@ -474,12 +474,29 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 			return len(frames) > 0
 		}
 		if resp.StatusCode != http.StatusOK {
-			c.markEndpointFailure(endpointIdx)
-			if attempt < maxAttempts {
-				log.Printf("[carrier] relay returned HTTP %d via %s (attempt %d/%d); retrying alternate script", resp.StatusCode, shortScriptKey(scriptURL), attempt, maxAttempts)
-				continue
+			switch resp.StatusCode {
+			case http.StatusForbidden: // 403
+				c.markEndpoint403(endpointIdx)
+				if attempt < maxAttempts {
+					log.Printf("[carrier] relay returned HTTP 403 via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
+					continue
+				}
+				log.Printf("[carrier] relay returned HTTP 403 via %s (Apps Script quota exhausted or deployment not set to 'Anyone'; quota resets at midnight Pacific — consider adding more script deployments or waiting for reset)", shortScriptKey(scriptURL))
+			case http.StatusTooManyRequests: // 429
+				c.markEndpoint429(endpointIdx)
+				if attempt < maxAttempts {
+					log.Printf("[carrier] relay returned HTTP 429 (rate-limited) via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
+					continue
+				}
+				log.Printf("[carrier] relay returned HTTP 429 (rate-limited) via %s; backing off and will retry automatically", shortScriptKey(scriptURL))
+			default:
+				c.markEndpointFailure(endpointIdx)
+				if attempt < maxAttempts {
+					log.Printf("[carrier] relay returned HTTP %d via %s (attempt %d/%d); retrying alternate script", resp.StatusCode, shortScriptKey(scriptURL), attempt, maxAttempts)
+					continue
+				}
+				log.Printf("[carrier] relay returned HTTP %d via %s (verify Apps Script deployment is live and access is set to Anyone)", resp.StatusCode, shortScriptKey(scriptURL))
 			}
-			log.Printf("[carrier] relay returned HTTP %d via %s (verify Apps Script deployment is live and access is set to Anyone)", resp.StatusCode, shortScriptKey(scriptURL))
 			return false
 		}
 		if len(respBody) > maxRelayResponseBodyBytes {
@@ -492,12 +509,21 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 			return len(frames) > 0
 		}
 		if isLikelyNonBatchRelayPayload(respBody) {
-			c.markEndpointFailure(endpointIdx)
+			errReason, errHard := classifyRelayErrorBody(respBody)
+			if errHard {
+				c.markEndpointHardFailure(endpointIdx)
+			} else {
+				c.markEndpointFailure(endpointIdx)
+			}
 			if attempt < maxAttempts {
 				log.Printf("[carrier] relay returned non-batch payload via %s (attempt %d/%d); retrying alternate script", shortScriptKey(scriptURL), attempt, maxAttempts)
 				continue
 			}
-			log.Printf("[carrier] relay returned non-batch payload via %s (likely HTML/JSON error page), dropping response", shortScriptKey(scriptURL))
+			if errReason != "" {
+				log.Printf("[carrier] relay returned non-batch payload via %s: %s", shortScriptKey(scriptURL), errReason)
+			} else {
+				log.Printf("[carrier] relay returned non-batch payload via %s (likely HTML/JSON error page), dropping response", shortScriptKey(scriptURL))
+			}
 			return len(frames) > 0
 		}
 
@@ -603,7 +629,38 @@ func (c *Client) markEndpointSuccess(endpointIdx int) {
 	}
 }
 
+// markEndpointFailure applies the standard exponential backoff ramp (3 s → 1 h)
+// for transient failures (network errors, 5xx, decode failures).
 func (c *Client) markEndpointFailure(endpointIdx int) {
+	c.markEndpointFailureWith(endpointIdx, 0)
+}
+
+// markEndpoint403 handles HTTP 403 (quota exhausted or deployment misconfigured).
+// Quota walls don't self-heal in seconds; they persist until midnight Pacific.
+// Jump straight to the 5-minute tier (failCount floor = 5 → next hit → 6 → 5 min)
+// to avoid hammering a dead endpoint and wasting the failover slot on peers.
+func (c *Client) markEndpoint403(endpointIdx int) {
+	c.markEndpointFailureWith(endpointIdx, 5)
+}
+
+// markEndpoint429 handles HTTP 429 (rate-limited). Shorter self-heal than a
+// full quota exhaustion: jump to failCount floor = 3 → next hit → 4 → 24 s TTL.
+func (c *Client) markEndpoint429(endpointIdx int) {
+	c.markEndpointFailureWith(endpointIdx, 3)
+}
+
+// markEndpointHardFailure is used when classifyRelayErrorBody identifies a quota
+// or auth error inside an HTML/JSON error page (even when HTTP status was 200).
+// Same backoff tier as markEndpoint403.
+func (c *Client) markEndpointHardFailure(endpointIdx int) {
+	c.markEndpointFailureWith(endpointIdx, 5)
+}
+
+// markEndpointFailureWith is the shared implementation. minFailCount is a floor
+// applied before incrementing so callers can skip the slow 3-48 s ramp for
+// failure classes known not to self-heal quickly (quota, auth, rate-limit).
+// Pass 0 for the standard ramp.
+func (c *Client) markEndpointFailureWith(endpointIdx, minFailCount int) {
 	c.endpointMu.Lock()
 	if endpointIdx < 0 || endpointIdx >= len(c.endpoints) {
 		c.endpointMu.Unlock()
@@ -611,6 +668,9 @@ func (c *Client) markEndpointFailure(endpointIdx int) {
 	}
 	ep := &c.endpoints[endpointIdx]
 	wasHealthy := ep.failCount == 0
+	if minFailCount > 0 && ep.failCount < minFailCount {
+		ep.failCount = minFailCount
+	}
 	ep.failCount++
 	ep.statsFail++
 	ttl := endpointBlacklistTTL(ep.failCount)
@@ -822,6 +882,112 @@ func isLikelyNonBatchRelayPayload(body []byte) bool {
 		return true
 	}
 	return false
+}
+
+// classifyRelayErrorBody inspects a non-batch response body (HTML or JSON error
+// page returned by Apps Script instead of an encrypted payload) and returns a
+// human-readable explanation and whether the failure is "hard" (quota / auth /
+// admin — won't self-heal in seconds) or "soft" (transient Google-side error).
+//
+// Pattern tables are ported from MasterHttpRelayVPN relay_response.py and cover
+// the error categories documented at:
+//
+//	developers.google.com/apps-script/guides/support/troubleshooting
+//	developers.google.com/apps-script/guides/services/quotas
+func classifyRelayErrorBody(body []byte) (reason string, hard bool) {
+	lower := strings.ToLower(string(bytes.TrimSpace(body)))
+
+	// ── Quota / rate-limit ─────────────────────────────────────────────────
+	// "Service invoked too many times for one day: urlfetch."
+	// "Bandwidth quota exceeded"
+	quotaPatterns := []string{
+		"service invoked too many times",
+		"invoked too many times",
+		"bandwidth quota exceeded",
+		"too much upload bandwidth",
+		"too much traffic",
+		"urlfetch",
+		"quota",
+		"exceeded",
+		"daily",
+		"rate limit",
+	}
+	for _, p := range quotaPatterns {
+		if strings.Contains(lower, p) {
+			return "Apps Script quota exhausted (20k requests/day limit) — " +
+				"wait up to 24h for the quota to reset at midnight Pacific, " +
+				"or deploy Code.gs under a second Google account and add it to script_keys", true
+		}
+	}
+
+	// ── Auth / permission ──────────────────────────────────────────────────
+	// "Authorization is required to perform that action."
+	authPatterns := []string{
+		"authorization is required",
+		"unauthorized",
+		"not authorized",
+		"permission denied",
+		"access denied",
+	}
+	for _, p := range authPatterns {
+		if strings.Contains(lower, p) {
+			return "Apps Script auth error — check: (1) AES key matches on both sides, " +
+				"(2) deployment is set to 'Execute as: Me / Anyone can access', " +
+				"(3) script_keys uses the Deployment ID (not the Script ID), " +
+				"(4) the owning Google account has authorised the script by running it manually", true
+		}
+	}
+
+	// ── Deployment not found ───────────────────────────────────────────────
+	// "Error occurred due to a missing library version or a deployment version.
+	//  Error code Not_Found"
+	deployPatterns := []string{
+		"error code not_found",
+		"not_found",
+		"deployment",
+		"script id",
+		"scriptid",
+		"no script",
+	}
+	for _, p := range deployPatterns {
+		if strings.Contains(lower, p) {
+			return "Apps Script deployment not found — verify script_keys is the Deployment ID " +
+				"(not the Script ID), the deployment is active, and you re-deployed after editing Code.gs", true
+		}
+	}
+
+	// ── Admin / Workspace policy ───────────────────────────────────────────
+	// "UrlFetch calls to <URL> are not permitted by your admin"
+	adminPatterns := []string{
+		"not permitted by your admin",
+		"contact your administrator",
+		"disabled. please contact",
+		"domain policy has disabled",
+		"administrator to enable",
+	}
+	for _, p := range adminPatterns {
+		if strings.Contains(lower, p) {
+			return "Apps Script blocked by a Google Workspace admin policy — " +
+				"either the target URL is not on the admin's UrlFetch allowlist " +
+				"or a required Google service has been disabled by the domain admin", true
+		}
+	}
+
+	// ── Transient Google-side errors ───────────────────────────────────────
+	// "Server not available." / "Server error occurred, please try again."
+	transientPatterns := []string{
+		"server not available",
+		"server error occurred",
+		"please try again",
+		"temporarily unavailable",
+	}
+	for _, p := range transientPatterns {
+		if strings.Contains(lower, p) {
+			return "Google Apps Script server temporarily unavailable — will retry", false
+		}
+	}
+
+	return "", false
 }
 
 func shortScriptKey(scriptURL string) string {

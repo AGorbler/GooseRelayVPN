@@ -97,6 +97,10 @@ func (c *Client) Diagnose(ctx context.Context) error {
 	}
 
 	if isLikelyNonBatchRelayPayload(respBody) {
+		reason, _ := classifyRelayErrorBody(respBody)
+		if reason != "" {
+			return fmt.Errorf("relay returned a non-batch response: %s", reason)
+		}
 		return fmt.Errorf("relay returned a non-batch response.\n  The Apps Script deployment may be misconfigured or hitting a quota error: %s", snippet(respBody))
 	}
 	if _, _, err := frame.DecodeBatch(c.aead, respBody); err != nil {
