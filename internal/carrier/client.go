@@ -31,14 +31,13 @@ const (
 	// (see idleBackoff) extends this when consecutive polls return no work.
 	pollIdleSleep = 10 * time.Millisecond
 
-	// pureDownloadIdleCap caps concurrent idle long-polls in pure-download
-	// mode. Previously this was numWorkers-1: every downstream chunk woke
-	// every idle long-poll, but only one received the chunk — the rest
-	// returned empty and immediately re-POSTed, multiplying upload bandwidth
-	// by the number of waiting workers. With many endpoints this produced
-	// the bandwidth blowup reported in issue #41 (7GB up for 3GB down).
-	// Two slots gives one-slot redundancy during the pollIdleSleep re-entry
-	// window without amplifying the wake-storm.
+	// pureDownloadIdleCap is the minimum number of concurrent idle long-polls
+	// allowed in pure-download mode (no pending TX). The actual cap is
+	// max(pureDownloadIdleCap, len(endpoints)) so multi-endpoint configs get
+	// one idle poll per deployment. This floor ensures single-endpoint configs
+	// keep two slots for redundancy during the pollIdleSleep re-entry window.
+	// Previously this was numWorkers-1 (issue #41: excessive empty POSTs);
+	// a hard cap of 2 overcorrected for multi-endpoint configs (issue #73).
 	pureDownloadIdleCap = 2
 
 	// pollTimeout is the per-request HTTP ceiling; should comfortably exceed
@@ -371,15 +370,18 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 	if isIdlePoll {
 		// Allow one idle long-poll slot per endpoint so each deployment can push
 		// downstream data concurrently. In pure-download mode (no pending TX)
-		// the previous setting was numWorkers-1 — but every downstream chunk
-		// woke every long-poll while only one received it, so the rest re-POSTed
+		// the previous setting was numWorkers-1 — every downstream chunk woke
+		// every long-poll while only one received it, so the rest re-POSTed
 		// empty bodies and amplified upload bandwidth N-fold (issue #41). Cap
-		// pure-download mode at pureDownloadIdleCap (=2): one held slot is
-		// enough to receive pushes, the second covers the pollIdleSleep gap
-		// while the first re-enters.
+		// pure-download mode to one slot per endpoint (max of pureDownloadIdleCap
+		// and len(endpoints)): each deployment gets exactly one standing poll to
+		// receive pushes. A fixed cap of 2 (issue #41 fix) under-provisioned
+		// multi-endpoint configs — only 2 of 4+ deployments received data at a
+		// time, causing throughput to collapse after initial SYNs completed
+		// (~15 s into a stream, issue #73).
 		c.mu.Lock()
 		idleCap := len(c.endpoints)
-		if len(c.txReady) == 0 {
+		if len(c.txReady) == 0 && idleCap < pureDownloadIdleCap {
 			idleCap = pureDownloadIdleCap
 		}
 		c.mu.Unlock()
@@ -659,7 +661,7 @@ func (c *Client) drainAll() ([]*frame.Frame, [][frame.SessionIDLen]byte) {
 
 	// Snapshot and sort active sessions by queue age to ensure fairness.
 	type sessionRef struct {
-		id      [frame.SessionIDLen]byte
+		id       [frame.SessionIDLen]byte
 		queuedAt time.Time
 	}
 	refs := make([]sessionRef, 0, len(c.txReady))

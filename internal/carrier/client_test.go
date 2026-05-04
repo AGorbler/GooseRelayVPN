@@ -223,9 +223,11 @@ func TestCarrier_FailsOverToHealthyScriptURLWithoutTxLoss(t *testing.T) {
 // pure-download branch let numWorkers-1 workers each hold an idle long-poll
 // concurrently. Every downstream chunk woke all of them; only one received
 // the chunk while the rest re-POSTed empty bodies, multiplying upload
-// bandwidth by the worker count. Cap is now pureDownloadIdleCap regardless
-// of endpoint count, so the peak number of concurrent in-flight idle polls
-// must not exceed that constant even with many endpoints configured.
+// bandwidth by the worker count. The cap in pure-download mode is now
+// max(pureDownloadIdleCap, len(endpoints)): one poll per endpoint, with a
+// floor of 2 for single-endpoint configs. This fixes both the upload
+// amplification of #41 and the throughput collapse in multi-endpoint configs
+// after initial SYNs completed (issue #73).
 func TestCarrier_PureDownloadIdleCap(t *testing.T) {
 	aead, err := frame.NewCryptoFromHexKey(testKeyHex)
 	if err != nil {
@@ -264,7 +266,7 @@ func TestCarrier_PureDownloadIdleCap(t *testing.T) {
 
 	// Four distinct endpoints → numWorkers = workersPerEndpoint × 4 = 12.
 	// Pre-fix idleCap in pure-download mode would have been 11. New cap is
-	// pureDownloadIdleCap (=2).
+	// max(pureDownloadIdleCap, len(endpoints)) = max(2, 4) = 4.
 	urls := []string{
 		srv.URL + "/a", srv.URL + "/b", srv.URL + "/c", srv.URL + "/d",
 	}
@@ -302,10 +304,14 @@ func TestCarrier_PureDownloadIdleCap(t *testing.T) {
 	gotTotal := totalReq
 	mu.Unlock()
 
-	if gotPeak > pureDownloadIdleCap {
+	wantCap := pureDownloadIdleCap
+	if len(c.endpoints) > wantCap {
+		wantCap = len(c.endpoints)
+	}
+	if gotPeak > wantCap {
 		t.Fatalf("peak concurrent idle long-polls = %d, want ≤ %d "+
 			"(numWorkers=%d, len(endpoints)=%d, totalReq=%d)",
-			gotPeak, pureDownloadIdleCap, c.numWorkers, len(c.endpoints), gotTotal)
+			gotPeak, wantCap, c.numWorkers, len(c.endpoints), gotTotal)
 	}
 	if gotPeak == 0 {
 		t.Fatal("no polls were issued; test did not exercise the cap")

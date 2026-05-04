@@ -134,7 +134,7 @@ type Server struct {
 	txReady       map[[frame.SessionIDLen]byte]struct{}                // sessions with pending TX frames
 	firstReply    map[[frame.SessionIDLen]byte]struct{}                // sessions whose first downstream batch hasn't been sent yet
 	upstreams     map[[frame.SessionIDLen]byte]net.Conn                // upstream conn per session, kept so GC can force-close
-	lastActivity  map[[frame.SessionIDLen]byte]time.Time                // last time the client sent a frame for this session
+	lastActivity  map[[frame.SessionIDLen]byte]time.Time               // last time the client sent a frame for this session
 	dialFail      map[string]time.Time
 	pendingRSTs   map[[frame.ClientIDLen]byte][]*frame.Frame // RSTs queued per requesting client
 
@@ -445,6 +445,7 @@ func (s *Server) routeIncoming(f *frame.Frame, owner [frame.ClientIDLen]byte) {
 			return
 		}
 		if s.isDialSuppressed(f.Target) {
+			log.Printf("[exit] dial suppressed for %s (recent failure backoff); sending RST", f.Target)
 			s.queueRST(owner, f.SessionID)
 			s.stats.rstSent.Add(1)
 			return
@@ -616,7 +617,7 @@ func (s *Server) drainAll(owner [frame.ClientIDLen]byte, byteBudget int) ([]*fra
 
 	// Snapshot and sort active sessions by queue age to ensure fairness.
 	type sessionRef struct {
-		id      [frame.SessionIDLen]byte
+		id       [frame.SessionIDLen]byte
 		queuedAt time.Time
 	}
 	refs := make([]sessionRef, 0, len(s.txReady))
