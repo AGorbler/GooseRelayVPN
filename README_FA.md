@@ -316,6 +316,7 @@ pkg install wget tar -y
 wget https://github.com/Kianmhz/GooseRelayVPN/releases/latest/download/GooseRelayVPN-client-v1.4.1-android-arm64.tar.gz
 tar -xzvf GooseRelayVPN-client-v1.4.1-android-arm64.tar.gz
 cd GooseRelayVPN-client-v1.4.1-android-arm64/
+chmod +x goose-client
 ```
 
 **۳. ساخت کانفیگ:**
