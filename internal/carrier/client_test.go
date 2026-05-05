@@ -321,6 +321,104 @@ func TestCarrier_PureDownloadIdleCap(t *testing.T) {
 	}
 }
 
+// TestCarrier_IdleSlotsPerBucket verifies that the IdleSlotsPerBucket config
+// knob multiplies the per-bucket idle long-poll cap. With 2 buckets and
+// IdleSlotsPerBucket=2, the cap should be 4 (not 2 from the default of 1).
+func TestCarrier_IdleSlotsPerBucket(t *testing.T) {
+	aead, err := frame.NewCryptoFromHexKey(testKeyHex)
+	if err != nil {
+		t.Fatalf("crypto: %v", err)
+	}
+
+	var (
+		mu       sync.Mutex
+		current  int
+		peak     int
+		totalReq int
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		current++
+		totalReq++
+		if current > peak {
+			peak = current
+		}
+		mu.Unlock()
+		time.Sleep(400 * time.Millisecond)
+		mu.Lock()
+		current--
+		mu.Unlock()
+
+		var clientID [frame.ClientIDLen]byte
+		body, _ := frame.EncodeBatch(aead, clientID, nil)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	// 4 endpoints, 2 distinct accounts (A,A,B,B), IdleSlotsPerBucket=2:
+	//   bucketCount=2, numWorkers=workersPerEndpoint×2=6,
+	//   idleCap=bucketCount×IdleSlotsPerBucket=4.
+	// Default IdleSlotsPerBucket=1 would cap at 2; the knob should lift it.
+	urls := []string{srv.URL + "/a", srv.URL + "/b", srv.URL + "/c", srv.URL + "/d"}
+	accounts := []string{"A", "A", "B", "B"}
+	c, err := New(Config{
+		ScriptURLs:         urls,
+		ScriptAccounts:     accounts,
+		AESKeyHex:          testKeyHex,
+		IdleSlotsPerBucket: 2,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	c.httpClients = []*http.Client{srv.Client()}
+
+	wantCap := c.bucketCount * c.idleSlotsPerBucket
+	if wantCap != 4 {
+		t.Fatalf("test setup: bucketCount=%d × idleSlotsPerBucket=%d = %d, want 4",
+			c.bucketCount, c.idleSlotsPerBucket, wantCap)
+	}
+	if c.numWorkers <= wantCap {
+		t.Fatalf("test setup: numWorkers (%d) must exceed wantCap (%d) to exercise it",
+			c.numWorkers, wantCap)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = c.Run(ctx)
+		close(done)
+	}()
+
+	time.Sleep(1500 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not return after cancel")
+	}
+
+	mu.Lock()
+	gotPeak := peak
+	gotTotal := totalReq
+	mu.Unlock()
+
+	if gotPeak > wantCap {
+		t.Fatalf("peak concurrent idle long-polls = %d, want ≤ %d "+
+			"(buckets=%d, idleSlotsPerBucket=%d, totalReq=%d)",
+			gotPeak, wantCap, c.bucketCount, c.idleSlotsPerBucket, gotTotal)
+	}
+	// Sanity check: with 2 buckets × 2 slots = 4 cap and 6 workers, we should
+	// observe peak ≥ 3 — anything lower means the knob isn't lifting the cap
+	// past the default-1 behavior (which would peak at 2).
+	if gotPeak < 3 {
+		t.Fatalf("peak concurrent idle long-polls = %d, want ≥ 3 "+
+			"(IdleSlotsPerBucket=2 should lift cap above default; totalReq=%d)",
+			gotPeak, gotTotal)
+	}
+}
+
 // TestCarrier_KickCoalesceDisabled verifies kick() broadcasts immediately
 // when adaptive coalescing is off (default). A worker waiting on the wake
 // channel must observe the broadcast without any added delay.

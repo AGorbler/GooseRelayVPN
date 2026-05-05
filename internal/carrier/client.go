@@ -89,6 +89,12 @@ type Config struct {
 	CoalesceStep time.Duration
 	CoalesceMax  time.Duration
 
+	// IdleSlotsPerBucket is the number of concurrent idle long-polls allowed
+	// per account bucket. <= 0 means default (1). Validated and capped at 3
+	// by the config layer; the carrier accepts any positive value here but
+	// users should configure through the config layer to get the cap and the
+	// "why this cap" error message.
+	IdleSlotsPerBucket int
 }
 
 type relayEndpoint struct {
@@ -148,13 +154,14 @@ func (w *waker) Broadcast() {
 
 // Client owns the session map and the long-poll loop.
 type Client struct {
-	cfg         Config
-	aead        *frame.Crypto
-	httpClients []*http.Client // one per SNI host; round-robined per request
-	nextHTTP    atomic.Uint64  // round-robin index into httpClients
-	debugTiming bool
-	numWorkers  int // workersPerEndpoint × bucketCount
-	bucketCount int // distinct account labels in endpoints; unlabeled all share one bucket
+	cfg                Config
+	aead               *frame.Crypto
+	httpClients        []*http.Client // one per SNI host; round-robined per request
+	nextHTTP           atomic.Uint64  // round-robin index into httpClients
+	debugTiming        bool
+	numWorkers         int // workersPerEndpoint × bucketCount
+	bucketCount        int // distinct account labels in endpoints; unlabeled all share one bucket
+	idleSlotsPerBucket int // resolved from Config.IdleSlotsPerBucket, default 1
 
 	// clientID is a random 16-byte identifier minted once per process. It is
 	// embedded in every encrypted batch so the server can route downstream
@@ -258,8 +265,12 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	numWorkers := workersPerEndpoint * bucketCount
-	log.Printf("[carrier] %d worker(s) across %d account bucket(s) (%d endpoint(s))",
-		numWorkers, bucketCount, len(endpoints))
+	idleSlotsPerBucket := cfg.IdleSlotsPerBucket
+	if idleSlotsPerBucket <= 0 {
+		idleSlotsPerBucket = 1
+	}
+	log.Printf("[carrier] %d worker(s) across %d account bucket(s) (%d endpoint(s)), %d idle slot(s)/bucket",
+		numWorkers, bucketCount, len(endpoints), idleSlotsPerBucket)
 	if labeled == 0 && len(endpoints) > 1 {
 		log.Printf("[carrier] WARN: %d deployments configured with no account labels — treating as one bucket. "+
 			"If these deployments are under different Google accounts, label them in script_keys "+
@@ -268,20 +279,21 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	return &Client{
-		cfg:              cfg,
-		aead:             aead,
-		httpClients:      NewFrontedClients(cfg.Fronting, pollTimeout, endpoints[0].url),
-		debugTiming:      cfg.DebugTiming,
-		numWorkers:       numWorkers,
-		bucketCount:      bucketCount,
-		clientID:         clientID,
-		sessions:         make(map[[frame.SessionIDLen]byte]*session.Session),
-		inFlight:         make(map[[frame.SessionIDLen]byte]bool),
-		txReady:          make(map[[frame.SessionIDLen]byte]struct{}),
-		endpoints:        endpoints,
-		wake:             newWaker(),
-		coalesceStep:     cfg.CoalesceStep,
-		coalesceMax:      cfg.CoalesceMax,
+		cfg:                cfg,
+		aead:               aead,
+		httpClients:        NewFrontedClients(cfg.Fronting, pollTimeout, endpoints[0].url),
+		debugTiming:        cfg.DebugTiming,
+		numWorkers:         numWorkers,
+		bucketCount:        bucketCount,
+		idleSlotsPerBucket: idleSlotsPerBucket,
+		clientID:           clientID,
+		sessions:           make(map[[frame.SessionIDLen]byte]*session.Session),
+		inFlight:           make(map[[frame.SessionIDLen]byte]bool),
+		txReady:            make(map[[frame.SessionIDLen]byte]struct{}),
+		endpoints:          endpoints,
+		wake:               newWaker(),
+		coalesceStep:       cfg.CoalesceStep,
+		coalesceMax:        cfg.CoalesceMax,
 	}, nil
 }
 
@@ -451,21 +463,21 @@ func (c *Client) pollOnce(ctx context.Context) bool {
 	}
 	isIdlePoll := len(frames) == 0
 	if isIdlePoll {
-		// Allow one idle long-poll slot per *account bucket* so each Google
-		// account's quota gets exactly one standing poll for downstream push.
-		// History: a fixed cap of 1 (v1.2.0) starved multi-deployment configs
-		// of downstream throughput. Issue #41's fix raised the cap to
-		// numWorkers-1, which then woke every long-poll on every chunk and
-		// amplified upload bandwidth N-fold. Issue #73's fix capped it at
-		// max(2, len(endpoints)) so each deployment got a slot — but when
-		// multiple deployments shared one Google account, that overloaded
-		// the account's per-second concurrency cap and Apps Script returned
-		// HTML error pages (issue #56). Scaling by bucket count instead of
-		// endpoint count gives each *quota account* one slot, which is the
-		// natural unit Apps Script throttles on. pureDownloadIdleCap=2 keeps
-		// a single-bucket config from regressing to a single standing poll.
+		// Allow idleSlotsPerBucket idle long-poll slots per *account bucket* so
+		// each Google account's quota gets the configured number of standing
+		// polls for downstream push. History: a fixed cap of 1 (v1.2.0) starved
+		// multi-deployment configs. Issue #41's fix to numWorkers-1 woke every
+		// long-poll on every chunk and amplified upload bandwidth N-fold.
+		// Issue #73's fix to max(2, len(endpoints)) gave each deployment a slot
+		// — but when multiple deployments shared one Google account, that
+		// overloaded the per-account concurrency cap (issue #56). Scaling by
+		// bucket count is the natural unit Apps Script throttles on; the
+		// idleSlotsPerBucket multiplier lets users who've validated their
+		// accounts can sustain >1 simultaneous poll opt up. pureDownloadIdleCap
+		// is the floor that keeps a single-bucket config from regressing to a
+		// single standing poll.
 		c.mu.Lock()
-		idleCap := c.bucketCount
+		idleCap := c.bucketCount * c.idleSlotsPerBucket
 		if len(c.txReady) == 0 && idleCap < pureDownloadIdleCap {
 			idleCap = pureDownloadIdleCap
 		}

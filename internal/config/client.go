@@ -42,6 +42,12 @@ type Client struct {
 	CoalesceStepMs int
 	CoalesceMaxMs  int
 
+	// IdleSlotsPerBucket controls how many concurrent idle long-polls the
+	// carrier maintains per account bucket. Default 1 (matches the bucket
+	// model's safe baseline). Raising to 2–3 increases download throughput
+	// when an account has multiple deployments, at the cost of more
+	// simultaneous executions on that account. 0 = use default.
+	IdleSlotsPerBucket int
 }
 
 // clientFile is the user-friendly client config format.
@@ -92,6 +98,12 @@ type clientFile struct {
 	// internal safety cap is derived from this value and is not user-configurable.
 	CoalesceStepMs int `json:"coalesce_step_ms"`
 
+	// Optional download-throughput tuning. Concurrent idle long-polls per
+	// account bucket. Default 1 (safe). Set to 2 to roughly double download
+	// throughput when each account has 2+ deployments. Higher than 3 is
+	// rejected — past that the per-account concurrency cap that issue #56
+	// surfaced becomes reachable again.
+	IdleSlotsPerBucket int `json:"idle_slots_per_bucket"`
 }
 
 func firstNonEmpty(values ...string) string {
@@ -380,6 +392,10 @@ func LoadClient(path string) (*Client, error) {
 		coalesceMax = f.CoalesceStepMs * 25
 	}
 
+	if f.IdleSlotsPerBucket < 0 || f.IdleSlotsPerBucket > 3 {
+		return nil, fmt.Errorf("idle_slots_per_bucket must be 0–3 in %s (got %d). 0 or unset = default (1, safest); 2–3 increases download throughput at the cost of more simultaneous executions per Google account, which can re-trigger issue #56 if your accounts can't sustain that concurrency", path, f.IdleSlotsPerBucket)
+	}
+
 	c := Client{
 		ListenAddr:                  net.JoinHostPort(listenHost, strconv.Itoa(listenPort)),
 		GoogleIP:                    googleIP,
@@ -393,6 +409,7 @@ func LoadClient(path string) (*Client, error) {
 		SocksPass:                   socksPass,
 		CoalesceStepMs:              f.CoalesceStepMs,
 		CoalesceMaxMs:               coalesceMax,
+		IdleSlotsPerBucket:          f.IdleSlotsPerBucket,
 	}
 	return &c, nil
 }
