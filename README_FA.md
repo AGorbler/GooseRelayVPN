@@ -110,6 +110,14 @@ go build -o goose-client ./cmd/client
 go build -o goose-server ./cmd/server
 ```
 
+**گزینه C — اجرای فقط سرور با Docker (GHCR):**
+
+اگر روی VPS استفاده از کانتینر را ترجیح می‌دهید، می‌توانید `goose-server` را مستقیم از GHCR اجرا کنید:
+
+```bash
+docker pull ghcr.io/kianmhz/gooserelayvpn-server:latest
+```
+
 ### مرحله ۳: ساخت یک کلید مخفی
 
 این دستور را یک‌بار اجرا کنید:
@@ -203,6 +211,39 @@ curl http://YOUR.VPS.IP:8443/healthz
 ```
 
 باید آدرس listening و آدرس‌های healthz/tunnel را ببینید. این ترمینال را باز بگذارید، یا مرحله ۸ را انجام دهید تا بعد از ریبوت هم بالا بماند.
+
+**Docker (ایمیج GHCR):**
+
+> ⚠️ **مهم:** کانتینر فایل `server_config.json` را به‌صورت خودکار نمی‌سازد. باید قبل از اجرا، `server_config.json` را خودتان بسازید و با `tunnel_key` خودتان پر کنید.
+
+```bash
+docker run -d \
+  --name goose-server \
+  --restart unless-stopped \
+  -p 8443:8443 \
+  -v $(pwd)/server_config.json:/app/server_config.json:ro \
+  ghcr.io/kianmhz/gooserelayvpn-server:latest
+```
+
+**Docker Compose (پیشنهادی برای راه‌اندازی کانتینری):**
+
+```bash
+cp server_config.example.json server_config.json
+nano server_config.json
+docker compose up -d
+```
+
+فایل [`docker-compose.yml`](docker-compose.yml) داخل مخزن آماده است. به‌صورت پیش‌فرض از `ghcr.io/kianmhz/gooserelayvpn-server:latest` استفاده می‌کند و برای پین کردن نسخه می‌توانید override کنید:
+
+```bash
+GOOSE_SERVER_IMAGE=ghcr.io/kianmhz/gooserelayvpn-server:vX.Y.Z docker compose up -d
+```
+
+تست از روی کامپیوتر خودتان:
+
+```bash
+curl http://YOUR.VPS.IP:8443/healthz
+```
 
 ### مرحله ۸: اجرای خودکار سرور بعد از ریبوت (systemd)
 

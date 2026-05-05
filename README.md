@@ -110,6 +110,14 @@ go build -o goose-client ./cmd/client
 go build -o goose-server ./cmd/server
 ```
 
+**Option C — Run only the server with Docker (GHCR):**
+
+If you prefer containers on your VPS, you can run `goose-server` directly from GHCR:
+
+```bash
+docker pull ghcr.io/kianmhz/gooserelayvpn-server:latest
+```
+
 ### Step 3: Generate a secret key
 
 Run this once:
@@ -203,6 +211,39 @@ On your VPS, run the server binary:
 ```
 
 You should see it print the listening address and the healthz/tunnel URLs. Leave this terminal open, or set up the systemd/NSSM service (Step 8) to keep it running after reboots.
+
+**Docker (GHCR image):**
+
+> ⚠️ **Important:** The container does **not** auto-generate `server_config.json`. You must create and edit `server_config.json` first (with your own `tunnel_key`), then start the container.
+
+```bash
+docker run -d \
+  --name goose-server \
+  --restart unless-stopped \
+  -p 8443:8443 \
+  -v $(pwd)/server_config.json:/app/server_config.json:ro \
+  ghcr.io/kianmhz/gooserelayvpn-server:latest
+```
+
+**Docker Compose (recommended for container setup):**
+
+```bash
+cp server_config.example.json server_config.json
+nano server_config.json
+docker compose up -d
+```
+
+The repo includes [`docker-compose.yml`](docker-compose.yml). By default it uses `ghcr.io/kianmhz/gooserelayvpn-server:latest`, and you can override it with:
+
+```bash
+GOOSE_SERVER_IMAGE=ghcr.io/kianmhz/gooserelayvpn-server:vX.Y.Z docker compose up -d
+```
+
+Verify from your own computer:
+
+```bash
+curl http://YOUR.VPS.IP:8443/healthz
+```
 
 ### Step 8: Keep the server running after reboot (systemd)
 
