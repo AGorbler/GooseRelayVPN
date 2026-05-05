@@ -55,15 +55,15 @@ func (c *Client) Diagnose(ctx context.Context) error {
 	var stats scriptStatsResponse
 	if len(trimmed) > 0 && trimmed[0] == '{' && json.Unmarshal(trimmed, &stats) == nil && stats.OK {
 		if stats.Version == 0 || stats.Protocol == 0 {
-			return fmt.Errorf("Apps Script deployment %s is outdated (missing version info).\n  Fix: redeploy apps_script/Code.gs and update script_keys", shortScriptKey(scriptURL))
+			return fmt.Errorf("apps script deployment %s is outdated (missing version info).\n  Fix: redeploy apps_script/Code.gs and update script_keys", shortScriptKey(scriptURL))
 		}
 		if stats.Protocol != protocol.ProtocolVersion {
-			return fmt.Errorf("Apps Script protocol mismatch: script=%d client=%d.\n  Fix: redeploy apps_script/Code.gs", stats.Protocol, protocol.ProtocolVersion)
+			return fmt.Errorf("apps script protocol mismatch: script=%d client=%d.\n  Fix: redeploy apps_script/Code.gs", stats.Protocol, protocol.ProtocolVersion)
 		}
 	} else if bytes.Contains(getBody, []byte("GooseRelay")) {
-		return fmt.Errorf("Apps Script deployment %s is outdated (legacy text response).\n  Fix: redeploy apps_script/Code.gs and update script_keys", shortScriptKey(scriptURL))
+		return fmt.Errorf("apps script deployment %s is outdated (legacy text response).\n  Fix: redeploy apps_script/Code.gs and update script_keys", shortScriptKey(scriptURL))
 	} else {
-		return fmt.Errorf("unexpected response from Apps Script %s (HTTP %d): %s", shortScriptKey(scriptURL), getResp.StatusCode, snippet(getBody))
+		return fmt.Errorf("unexpected response from apps script %s (HTTP %d): %s", shortScriptKey(scriptURL), getResp.StatusCode, snippet(getBody))
 	}
 
 	// --- Probe 2: POST an encrypted probe frame to verify VPS reachability and AES key. ---
@@ -101,12 +101,12 @@ func (c *Client) Diagnose(ctx context.Context) error {
 	case http.StatusOK:
 		// Continue to body check below.
 	case http.StatusNoContent:
-		return fmt.Errorf("VPS server rejected our probe (HTTP 204).\n  Most likely cause: AES key mismatch. The tunnel_key in client_config.json must be byte-identical to the one in server_config.json on the VPS")
+		return fmt.Errorf("vps server rejected our probe (HTTP 204).\n  Most likely cause: AES key mismatch. The tunnel_key in client_config.json must be byte-identical to the one in server_config.json on the VPS")
 	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		if bytes.Contains(bytes.ToLower(respBody), []byte("<html")) {
-			return fmt.Errorf("VPS unreachable from Apps Script (HTTP %d, HTML error page).\n  Fix: confirm VPS_URL in Code.gs points to your VPS, that goose-server is running, and that the port is reachable from Google (try: curl http://YOUR.VPS.IP:8443/healthz from a different network)", postResp.StatusCode)
+			return fmt.Errorf("vps unreachable from apps script (HTTP %d, HTML error page).\n  Fix: confirm VPS_URL in Code.gs points to your VPS, that goose-server is running, and that the port is reachable from Google (try: curl http://YOUR.VPS.IP:8443/healthz from a different network)", postResp.StatusCode)
 		}
-		return fmt.Errorf("HTTP %d from Apps Script — VPS may be unreachable: %s", postResp.StatusCode, snippet(respBody))
+		return fmt.Errorf("http %d from apps script — vps may be unreachable: %s", postResp.StatusCode, snippet(respBody))
 	default:
 		return fmt.Errorf("unexpected HTTP %d during probe: %s", postResp.StatusCode, snippet(respBody))
 	}
@@ -116,7 +116,7 @@ func (c *Client) Diagnose(ctx context.Context) error {
 		if reason != "" {
 			return fmt.Errorf("relay returned a non-batch response: %s", reason)
 		}
-		return fmt.Errorf("relay returned a non-batch response.\n  The Apps Script deployment may be misconfigured or hitting a quota error: %s", snippet(respBody))
+		return fmt.Errorf("relay returned a non-batch response.\n  The apps script deployment may be misconfigured or hitting a quota error: %s", snippet(respBody))
 	}
 	_, rxFrames, err := frame.DecodeBatch(c.aead, respBody)
 	if err != nil {
