@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime"
 	"time"
 )
 
@@ -29,10 +30,18 @@ func (s *Server) runStatsLoop(ctx context.Context) {
 func (s *Server) logStats() {
 	s.mu.Lock()
 	active := len(s.sessions)
+	clients := len(s.activity)
 	s.mu.Unlock()
 
-	log.Printf("[stats] active=%d sessions(open=%d close=%d) frames(in=%d out=%d) bytes(in=%s out=%s) requests=%d dials(ok=%d fail=%d) rst_sent=%d decode_fail=%d",
-		active,
+	// goroutines is the headline leak indicator: each session spawns 3
+	// (read, write, rxLoop), so under healthy operation goroutines should
+	// track ~3×active plus a small constant. A monotonic climb while active
+	// stays flat is the signature of the leak fixed in the openSession read
+	// goroutine path — keep this in the always-on stats line so regressions
+	// surface in service logs without needing pprof.
+	log.Printf("[stats] goroutines=%d active=%d clients=%d sessions(open=%d close=%d) frames(in=%d out=%d) bytes(in=%s out=%s) requests=%d dials(ok=%d fail=%d) rst_sent=%d decode_fail=%d",
+		runtime.NumGoroutine(),
+		active, clients,
 		s.stats.sessionsOpen.Load(), s.stats.sessionsClose.Load(),
 		s.stats.framesIn.Load(), s.stats.framesOut.Load(),
 		humanBytes(s.stats.bytesIn.Load()), humanBytes(s.stats.bytesOut.Load()),

@@ -568,6 +568,13 @@ func (s *Server) openSession(id [frame.SessionIDLen]byte, target string, owner [
 					log.Printf("[exit] upstream read %x: %v", id[:4], err)
 				}
 				sess.RequestClose()
+				// Stop the session so rxLoop exits and its defer closes RxChan,
+				// which unblocks the write goroutine below and lets both pump
+				// goroutines exit cleanly. Using Stop() here (rather than
+				// CloseRx() directly) avoids racing with an in-flight deliverRx
+				// that has released the session mutex but not yet sent on
+				// RxChan — closing RxChan out from under it would panic.
+				sess.Stop()
 				return
 			}
 		}
@@ -684,6 +691,17 @@ func (s *Server) gcDoneSessions() {
 			delete(s.upstreams, id)
 			delete(s.lastActivity, id)
 			s.stats.sessionsClose.Add(1)
+		}
+	}
+	// Clean up activity channels for clients that have no active sessions.
+	// Prevents unbounded map growth when clients connect/disconnect repeatedly.
+	activeOwners := make(map[[frame.ClientIDLen]byte]struct{}, len(s.sessions))
+	for _, owner := range s.sessionOwners {
+		activeOwners[owner] = struct{}{}
+	}
+	for owner := range s.activity {
+		if _, stillActive := activeOwners[owner]; !stillActive {
+			delete(s.activity, owner)
 		}
 	}
 }
