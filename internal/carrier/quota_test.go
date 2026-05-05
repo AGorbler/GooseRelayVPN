@@ -1,6 +1,7 @@
 package carrier
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,6 +70,50 @@ func TestRecordScriptStatsFromBody_LegacyTextResponse(t *testing.T) {
 	}
 	if !c.endpoints[0].scriptStatsErrLogged {
 		t.Fatalf("scriptStatsErrLogged should be set so future hours don't re-log")
+	}
+}
+
+func TestAccountStatsLine_DedupesSharedScriptCount(t *testing.T) {
+	// Two deployments of one Apps Script project under account A: PropertiesService
+	// is per-project so both report the same scriptCount. Summing would
+	// double-count the project's true count. A third deployment under account B
+	// (different project, different count) should still be summed normally.
+	now := time.Now()
+	c := &Client{endpoints: []relayEndpoint{
+		{url: "u1", account: "A", dailyCount: 30, scriptCount: 1674, scriptCountAt: now, dailyResetAt: now.Add(time.Hour)},
+		{url: "u2", account: "A", dailyCount: 30, scriptCount: 1674, scriptCountAt: now, dailyResetAt: now.Add(time.Hour)},
+		{url: "u3", account: "B", dailyCount: 65, scriptCount: 1503, scriptCountAt: now, dailyResetAt: now.Add(time.Hour)},
+	}}
+
+	got := c.accountStatsLine()
+
+	// A's two deployments share count 1674 → reported once, not 1674+1674=3348.
+	// today still sums normally (per-deployment client-side counter).
+	wantA := "A today=60 script=1674"
+	wantB := "B today=65 script=1503"
+	for _, want := range []string{wantA, wantB} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("accountStatsLine() = %q, missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "script=3348") {
+		t.Fatalf("accountStatsLine() = %q, double-counted shared scriptCount", got)
+	}
+}
+
+func TestAccountStatsLine_SumsDistinctProjectsUnderOneAccount(t *testing.T) {
+	// Two distinct Apps Script projects under one account: distinct
+	// scriptCount values, so they should sum.
+	now := time.Now()
+	c := &Client{endpoints: []relayEndpoint{
+		{url: "u1", account: "A", dailyCount: 10, scriptCount: 100, scriptCountAt: now, dailyResetAt: now.Add(time.Hour)},
+		{url: "u2", account: "A", dailyCount: 20, scriptCount: 250, scriptCountAt: now, dailyResetAt: now.Add(time.Hour)},
+	}}
+
+	got := c.accountStatsLine()
+	want := "A today=30 script=350"
+	if !strings.Contains(got, want) {
+		t.Fatalf("accountStatsLine() = %q, want substring %q", got, want)
 	}
 }
 

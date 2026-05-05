@@ -106,14 +106,23 @@ func (c *Client) endpointStatsLine() string {
 // client-side count and (when available) the script-reported count per
 // account so the operator can directly read each Google account's spend
 // against its ~20k/day quota.
+//
+// scriptCount aggregation is dedup-by-value, not sum: PropertiesService is
+// per Apps Script project, so multiple deployments of one project all report
+// the same count. Summing them would multiply the project's true count by
+// the deployment fan-out (issue surfaced when a user with 2 deployments of
+// 1 project per account saw `script` reported at 2× the doGet value).
+// Distinct projects under one account give distinct counts and are still
+// summed correctly; the only edge is two different projects coincidentally
+// at the same count, which would undercount by one — negligible at the
+// thousand-call scale these counters operate at.
 func (c *Client) accountStatsLine() string {
 	c.endpointMu.Lock()
 	defer c.endpointMu.Unlock()
 
 	type agg struct {
-		today      uint64
-		script     uint64
-		haveScript bool
+		today        uint64
+		scriptCounts map[uint64]struct{} // distinct script-reported counts seen for this account
 	}
 	totals := map[string]*agg{}
 	now := time.Now()
@@ -127,13 +136,12 @@ func (c *Client) accountStatsLine() string {
 		c.touchDailyWindow(ep, now)
 		a, ok := totals[ep.account]
 		if !ok {
-			a = &agg{}
+			a = &agg{scriptCounts: map[uint64]struct{}{}}
 			totals[ep.account] = a
 		}
 		a.today += ep.dailyCount
 		if !ep.scriptCountAt.IsZero() {
-			a.script += ep.scriptCount
-			a.haveScript = true
+			a.scriptCounts[ep.scriptCount] = struct{}{}
 		}
 	}
 	if !hasAny {
@@ -150,8 +158,12 @@ func (c *Client) accountStatsLine() string {
 	for _, name := range names {
 		a := totals[name]
 		s := fmt.Sprintf("%s today=%d", name, a.today)
-		if a.haveScript {
-			s = fmt.Sprintf("%s script=%d", s, a.script)
+		if len(a.scriptCounts) > 0 {
+			var script uint64
+			for v := range a.scriptCounts {
+				script += v
+			}
+			s = fmt.Sprintf("%s script=%d", s, script)
 		}
 		parts = append(parts, s)
 	}
