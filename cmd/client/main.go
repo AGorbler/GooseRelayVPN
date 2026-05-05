@@ -19,6 +19,8 @@ import (
 	"github.com/kianmhz/GooseRelayVPN/internal/socks"
 )
 
+var version = "dev"
+
 type clientLogWriter struct {
 	out      io.Writer
 	useColor bool
@@ -164,6 +166,7 @@ func main() {
 		ScriptAccounts:     cfg.ScriptAccounts,
 		AESKeyHex:          cfg.AESKeyHex,
 		DebugTiming:        cfg.DebugTiming,
+		ClientVersion:      version,
 		CoalesceStep:       time.Duration(cfg.CoalesceStepMs) * time.Millisecond,
 		CoalesceMax:        time.Duration(cfg.CoalesceMaxMs) * time.Millisecond,
 		IdleSlotsPerBucket: cfg.IdleSlotsPerBucket,

@@ -194,7 +194,7 @@ Then verify it works from your own computer (replace with your real VPS IP):
 curl http://YOUR.VPS.IP:8443/healthz
 ```
 
-You should get an empty response with HTTP 200. If `curl` times out or refuses, also check your **cloud provider's firewall** (called "Security Groups" on AWS/Hetzner, "Firewall Rules" on DigitalOcean/Vultr, etc.) and add an inbound rule for TCP port 8443.
+You should get JSON like `{ "ok": true, "version": "vX.Y.Z", "protocol": 1 }` with HTTP 200. If `curl` times out or refuses, also check your **cloud provider's firewall** (called "Security Groups" on AWS/Hetzner, "Firewall Rules" on DigitalOcean/Vultr, etc.) and add an inbound rule for TCP port 8443.
 
 ### Step 7: Start the server on your VPS
 
@@ -459,7 +459,7 @@ What the client does for you automatically:
 
 If you change `Code.gs` — for example to point at a new VPS IP — you must create a **new deployment** in the Apps Script editor (Deploy → **New deployment**, not just "Manage deployments"). Saving alone does nothing; the live `/exec` URL serves the published version. After redeploying, update `script_keys` in `client_config.json`.
 
-The current `Code.gs` also tracks per-deployment invocation counts and exposes them via `doGet`. If you have an older deployment, redeploying once enables the `script=N` field in the client's periodic `[stats]` line (the rest of the tunnel keeps working either way; you just won't see the script-side number until you redeploy).
+The current `Code.gs` also tracks per-deployment invocation counts and exposes them via `doGet`, along with forwarder/protocol metadata used by the client's pre-flight check. If you have an older deployment, redeploying once enables the `script=N` field in the client's periodic `[stats]` line and avoids version-mismatch warnings.
 
 ---
 

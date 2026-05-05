@@ -69,7 +69,8 @@ const (
 
 // Config bundles everything the carrier needs to talk to the relay.
 type Config struct {
-	ScriptURLs []string // one or more full https://script.google.com/macros/s/.../exec URLs
+	ScriptURLs    []string // one or more full https://script.google.com/macros/s/.../exec URLs
+	ClientVersion string   // build version string for diagnostics
 
 	// ScriptAccounts is an optional parallel slice to ScriptURLs labeling each
 	// deployment with the Google account it lives under. When set, the periodic
@@ -162,6 +163,7 @@ type Client struct {
 	numWorkers         int // (workersPerEndpoint + idleSlotsPerBucket - 1) × bucketCount
 	bucketCount        int // distinct account labels in endpoints; unlabeled all share one bucket
 	idleSlotsPerBucket int // resolved from Config.IdleSlotsPerBucket, default 1
+	clientVersion     string
 
 	// clientID is a random 16-byte identifier minted once per process. It is
 	// embedded in every encrypted batch so the server can route downstream
@@ -294,6 +296,7 @@ func New(cfg Config) (*Client, error) {
 		numWorkers:         numWorkers,
 		bucketCount:        bucketCount,
 		idleSlotsPerBucket: idleSlotsPerBucket,
+		clientVersion:      cfg.ClientVersion,
 		clientID:           clientID,
 		sessions:           make(map[[frame.SessionIDLen]byte]*session.Session),
 		inFlight:           make(map[[frame.SessionIDLen]byte]bool),

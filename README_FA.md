@@ -180,6 +180,8 @@ cp server_config.example.json server_config.json
 
 > ⚠️ هر بار که `Code.gs` را ویرایش می‌کنید باید **یک deployment جدید** بسازید (Deploy → **New deployment**) و `script_keys` را به‌روزرسانی کنید. صرفاً ذخیره کردن کد کافی نیست.
 
+نسخهٔ جدید `Code.gs` در `doGet` متادیتای نسخه/پروتکل را هم برمی‌گرداند تا بررسی pre-flight بتواند ناسازگاری نسخه را تشخیص دهد. اگر deployment قدیمی باشد، باید یک‌بار دوباره deploy کنید تا هشدار ناسازگاری نگیرید.
+
 ### مرحله ۶: باز کردن پورت 8443 روی فایروال VPS
 
 سرور باید از اینترنت روی پورت 8443 قابل دسترسی باشد. روی VPS اجرا کنید:
@@ -194,7 +196,7 @@ sudo ufw allow 8443/tcp
 curl http://YOUR.VPS.IP:8443/healthz
 ```
 
-باید یک پاسخ خالی با HTTP 200 بگیرید. اگر `curl` تایم‌اوت شد یا خطا داد، **فایروال ارائه‌دهنده ابری** را هم بررسی کنید (در AWS/Hetzner به نام "Security Groups"، در DigitalOcean/Vultr به نام "Firewall Rules") و یک قانون ورودی برای TCP پورت 8443 اضافه کنید.
+باید یک JSON مثل `{ "ok": true, "version": "vX.Y.Z", "protocol": 1 }` با HTTP 200 بگیرید. اگر `curl` تایم‌اوت شد یا خطا داد، **فایروال ارائه‌دهنده ابری** را هم بررسی کنید (در AWS/Hetzner به نام "Security Groups"، در DigitalOcean/Vultr به نام "Firewall Rules") و یک قانون ورودی برای TCP پورت 8443 اضافه کنید.
 
 ### مرحله ۷: اجرای سرور روی VPS
 

@@ -10,6 +10,8 @@
 // Replace RELAY_URL with your VPS address before deploying.
 
 const RELAY_URL = 'http://YOUR.VPS.IP:8443/tunnel';
+const FORWARDER_VERSION = 1;
+const PROTOCOL_VERSION = 1;
 
 function doPost(e) {
   bumpInvocationCount_();
@@ -32,11 +34,22 @@ function doPost(e) {
 // day boundary tracks the Apps Script quota window (midnight Pacific). Format
 // is JSON so the client can parse without ambiguity:
 //   {"ok":true,"date":"2026-05-04","count":1234}
-function doGet() {
+function doGet(e) {
+  if (e && e.parameter && e.parameter.legacy === '1') {
+    return ContentService
+      .createTextOutput('GooseRelay forwarder OK')
+      .setMimeType(ContentService.MimeType.TEXT);
+  }
   const props = PropertiesService.getScriptProperties();
   const today = pacificDateKey_();
   const count = parseInt(props.getProperty('count_' + today) || '0', 10);
-  const out = { ok: true, date: today, count: count };
+  const out = {
+    ok: true,
+    date: today,
+    count: count,
+    version: FORWARDER_VERSION,
+    protocol: PROTOCOL_VERSION,
+  };
   return ContentService
     .createTextOutput(JSON.stringify(out))
     .setMimeType(ContentService.MimeType.JSON);

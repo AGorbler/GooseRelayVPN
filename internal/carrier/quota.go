@@ -96,9 +96,11 @@ const (
 // scriptStatsResponse is the JSON the deployed Code.gs returns from doGet.
 // Mirrors the shape produced in apps_script/Code.gs.
 type scriptStatsResponse struct {
-	OK    bool   `json:"ok"`
-	Date  string `json:"date"`
-	Count int64  `json:"count"`
+	OK       bool   `json:"ok"`
+	Date     string `json:"date"`
+	Count    int64  `json:"count"`
+	Version  int    `json:"version"`
+	Protocol int    `json:"protocol"`
 }
 
 // runScriptStatsLoop polls each deployment's doGet endpoint hourly and records

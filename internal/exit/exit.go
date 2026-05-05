@@ -6,6 +6,7 @@ package exit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/kianmhz/GooseRelayVPN/internal/frame"
+	"github.com/kianmhz/GooseRelayVPN/internal/protocol"
 	"github.com/kianmhz/GooseRelayVPN/internal/session"
 	"golang.org/x/net/proxy"
 )
@@ -118,6 +120,7 @@ type Config struct {
 	AESKeyHex     string // 64-char hex
 	DebugTiming   bool   // when true, log per-session dial breakdown and first-read latency
 	UpstreamProxy string // optional "host:port" of a local SOCKS5 proxy (e.g. WARP on 127.0.0.1:40000)
+	Version       string // build version string (exposed in /healthz and version probe)
 }
 
 // Server holds the per-process session state.
@@ -127,6 +130,7 @@ type Server struct {
 	dial        func(network, address string, timeout time.Duration) (net.Conn, error)
 	dns         *dnsCache
 	debugTiming bool
+	version     string
 
 	mu            sync.Mutex
 	sessions      map[[frame.SessionIDLen]byte]*session.Session
@@ -137,6 +141,7 @@ type Server struct {
 	lastActivity  map[[frame.SessionIDLen]byte]time.Time               // last time the client sent a frame for this session
 	dialFail      map[string]time.Time
 	pendingRSTs   map[[frame.ClientIDLen]byte][]*frame.Frame // RSTs queued per requesting client
+	pendingCtrl   map[[frame.ClientIDLen]byte][]*frame.Frame // control responses queued per client
 
 	// activity is a per-client wake channel. handleTunnel waits on the
 	// channel for its own clientID; openSession's TX callback kicks the
@@ -179,6 +184,7 @@ func New(cfg Config) (*Server, error) {
 		dial:          dialFn,
 		dns:           newDNSCache(),
 		debugTiming:   cfg.DebugTiming,
+		version:       cfg.Version,
 		sessions:      make(map[[frame.SessionIDLen]byte]*session.Session),
 		sessionOwners: make(map[[frame.SessionIDLen]byte][frame.ClientIDLen]byte),
 		txReady:       make(map[[frame.SessionIDLen]byte]struct{}),
@@ -187,6 +193,7 @@ func New(cfg Config) (*Server, error) {
 		lastActivity:  make(map[[frame.SessionIDLen]byte]time.Time),
 		dialFail:      make(map[string]time.Time),
 		pendingRSTs:   make(map[[frame.ClientIDLen]byte][]*frame.Frame),
+		pendingCtrl:   make(map[[frame.ClientIDLen]byte][]*frame.Frame),
 		activity:      make(map[[frame.ClientIDLen]byte]chan struct{}),
 	}
 	s.upstreamReadPool.New = func() interface{} {
@@ -229,7 +236,18 @@ func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tunnel", s.handleTunnel)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		payload, err := json.Marshal(map[string]interface{}{
+			"ok":       true,
+			"version":  s.version,
+			"protocol": protocol.ProtocolVersion,
+		})
+		if err != nil {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
 	})
 	httpSrv := &http.Server{
 		Addr:        s.cfg.ListenAddr,
@@ -439,6 +457,10 @@ func (s *Server) routeIncoming(f *frame.Frame, owner [frame.ClientIDLen]byte) {
 
 	if !exists {
 		if !f.HasFlag(frame.FlagSYN) {
+			if protocol.IsProbePayload(f.Payload) {
+				s.queueVersionResponse(owner, f.SessionID)
+				return
+			}
 			log.Printf("[exit] frame for unknown session (no SYN), sending RST")
 			s.queueRST(owner, f.SessionID)
 			s.stats.rstSent.Add(1)
@@ -478,6 +500,18 @@ func (s *Server) queueRST(owner [frame.ClientIDLen]byte, sessionID [frame.Sessio
 	rst := &frame.Frame{SessionID: sessionID, Flags: frame.FlagRST}
 	s.mu.Lock()
 	s.pendingRSTs[owner] = append(s.pendingRSTs[owner], rst)
+	s.mu.Unlock()
+	s.kick(owner)
+}
+
+func (s *Server) queueVersionResponse(owner [frame.ClientIDLen]byte, sessionID [frame.SessionIDLen]byte) {
+	payload, err := protocol.EncodeVersionInfo(s.version, MaxFramePayload, []string{"zstd", "raw_base64"})
+	if err != nil {
+		payload = []byte("{\"ok\":false}")
+	}
+	rst := &frame.Frame{SessionID: sessionID, Flags: frame.FlagRST, Payload: payload}
+	s.mu.Lock()
+	s.pendingCtrl[owner] = append(s.pendingCtrl[owner], rst)
 	s.mu.Unlock()
 	s.kick(owner)
 }
@@ -610,6 +644,11 @@ func (s *Server) drainAll(owner [frame.ClientIDLen]byte, byteBudget int) ([]*fra
 	defer s.mu.Unlock()
 	var out []*frame.Frame
 	var urgent bool
+	if ctrl := s.pendingCtrl[owner]; len(ctrl) > 0 {
+		out = append(out, ctrl...)
+		delete(s.pendingCtrl, owner)
+		urgent = true
+	}
 	if rsts := s.pendingRSTs[owner]; len(rsts) > 0 {
 		out = append(out, rsts...)
 		delete(s.pendingRSTs, owner)

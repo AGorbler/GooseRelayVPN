@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/kianmhz/GooseRelayVPN/internal/frame"
+	"github.com/kianmhz/GooseRelayVPN/internal/protocol"
 )
 
 // Diagnose performs a one-shot end-to-end health check against the first
@@ -21,8 +23,8 @@ import (
 //  1. GET <scriptURL>/exec — Apps Script's doGet returns "GooseRelay
 //     forwarder OK". If we get HTML or 404 the deployment is wrong or
 //     not public.
-//  2. POST an empty encrypted batch — server should round-trip a valid
-//     encrypted reply. 204 No Content means our key did not decrypt
+//  2. POST an encrypted probe batch — server should round-trip a valid
+//     encrypted reply with version info. 204 No Content means our key did not decrypt
 //     (key mismatch); HTTP 5xx with HTML means Apps Script could not
 //     reach the VPS.
 func (c *Client) Diagnose(ctx context.Context) error {
@@ -46,14 +48,22 @@ func (c *Client) Diagnose(ctx context.Context) error {
 	if getResp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("deployment %s returned HTTP 404 — the Deployment ID in script_keys is wrong, the deployment was deleted, or the Web App was never published. Re-deploy with Deploy → New deployment, then update script_keys", shortScriptKey(scriptURL))
 	}
-	if !bytes.Contains(getBody, []byte("GooseRelay")) {
-		if bytes.Contains(bytes.ToLower(getBody), []byte("<html")) {
-			return fmt.Errorf("deployment %s is not public (Apps Script returned HTML instead of the forwarder).\n  Fix: Deploy → Manage deployments → edit → set 'Who has access' to 'Anyone' and re-deploy", shortScriptKey(scriptURL))
+	if bytes.Contains(bytes.ToLower(getBody), []byte("<html")) {
+		return fmt.Errorf("deployment %s is not public (Apps Script returned HTML instead of the forwarder).\n  Fix: Deploy → Manage deployments → edit → set 'Who has access' to 'Anyone' and re-deploy", shortScriptKey(scriptURL))
+	}
+	trimmed := bytes.TrimSpace(getBody)
+	var stats scriptStatsResponse
+	if len(trimmed) > 0 && trimmed[0] == '{' && json.Unmarshal(trimmed, &stats) == nil && stats.OK {
+		if stats.Version == 0 || stats.Protocol == 0 {
+			return fmt.Errorf("Apps Script deployment %s is outdated (missing version info).\n  Fix: redeploy apps_script/Code.gs and update script_keys", shortScriptKey(scriptURL))
 		}
-		trimmed := bytes.TrimSpace(getBody)
-		if len(trimmed) == 0 || trimmed[0] != '{' || !bytes.Contains(trimmed, []byte("\"ok\":true")) {
-			return fmt.Errorf("unexpected response from Apps Script %s (HTTP %d): %s", shortScriptKey(scriptURL), getResp.StatusCode, snippet(getBody))
+		if stats.Protocol != protocol.ProtocolVersion {
+			return fmt.Errorf("Apps Script protocol mismatch: script=%d client=%d.\n  Fix: redeploy apps_script/Code.gs", stats.Protocol, protocol.ProtocolVersion)
 		}
+	} else if bytes.Contains(getBody, []byte("GooseRelay")) {
+		return fmt.Errorf("Apps Script deployment %s is outdated (legacy text response).\n  Fix: redeploy apps_script/Code.gs and update script_keys", shortScriptKey(scriptURL))
+	} else {
+		return fmt.Errorf("unexpected response from Apps Script %s (HTTP %d): %s", shortScriptKey(scriptURL), getResp.StatusCode, snippet(getBody))
 	}
 
 	// --- Probe 2: POST an encrypted probe frame to verify VPS reachability and AES key. ---
@@ -65,9 +75,11 @@ func (c *Client) Diagnose(ctx context.Context) error {
 	if _, rerr := rand.Read(probeID[:]); rerr != nil {
 		return fmt.Errorf("internal: cannot generate probe session id: %w", rerr)
 	}
+	probePayload := protocol.EncodeProbePayload(c.clientVersion)
 	probeFrame := &frame.Frame{
 		SessionID: probeID,
 		Flags:     frame.FlagACK,
+		Payload:   probePayload,
 	}
 	body, err := frame.EncodeBatch(c.aead, c.clientID, []*frame.Frame{probeFrame})
 	if err != nil {
@@ -106,8 +118,27 @@ func (c *Client) Diagnose(ctx context.Context) error {
 		}
 		return fmt.Errorf("relay returned a non-batch response.\n  The Apps Script deployment may be misconfigured or hitting a quota error: %s", snippet(respBody))
 	}
-	if _, _, err := frame.DecodeBatch(c.aead, respBody); err != nil {
+	_, rxFrames, err := frame.DecodeBatch(c.aead, respBody)
+	if err != nil {
 		return fmt.Errorf("response from VPS could not be decrypted (%v).\n  Most likely cause: AES key mismatch. tunnel_key in client_config.json must be byte-identical to server_config.json on the VPS", err)
+	}
+	var serverInfo *protocol.VersionInfo
+	for _, f := range rxFrames {
+		if !f.HasFlag(frame.FlagRST) || len(f.Payload) == 0 {
+			continue
+		}
+		info, perr := protocol.DecodeVersionInfo(f.Payload)
+		if perr != nil || !info.OK {
+			continue
+		}
+		serverInfo = info
+		break
+	}
+	if serverInfo == nil {
+		return fmt.Errorf("server did not return version info — likely an outdated goose-server deployment.\n  Fix: update goose-server on the VPS")
+	}
+	if serverInfo.Protocol != protocol.ProtocolVersion {
+		return fmt.Errorf("server protocol mismatch: server=%d client=%d.\n  Fix: update goose-server or goose-client so they match", serverInfo.Protocol, protocol.ProtocolVersion)
 	}
 	return nil
 }

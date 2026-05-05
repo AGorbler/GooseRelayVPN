@@ -12,6 +12,8 @@ import (
 	"github.com/kianmhz/GooseRelayVPN/internal/exit"
 )
 
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "server_config.json", "path to server config JSON")
 	flag.Parse()
@@ -26,6 +28,7 @@ func main() {
 		AESKeyHex:     cfg.AESKeyHex,
 		DebugTiming:   cfg.DebugTiming,
 		UpstreamProxy: cfg.UpstreamProxy,
+		Version:       version,
 	})
 	if err != nil {
 		log.Fatalf("exit: %v", err)
